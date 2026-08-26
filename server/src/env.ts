@@ -28,9 +28,7 @@ function optionalNumber(name: string, fallback: number): number {
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   port: optionalNumber("PORT", 3000),
+  databaseUrl: required("DATABASE_URL"),
 } as const;
 
 export const isProduction = env.nodeEnv === "production";
-
-// Referenced so the helper is used once the first real secret is added.
-export { required };

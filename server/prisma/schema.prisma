@@ -1,0 +1,14 @@
+// Prisma schema. The connection URL lives in prisma.config.ts, not here.
+// Docs: https://www.prisma.io/docs
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Models are added in Phase 2 of implementation-plan.md (User, Session),
+// then Phase 3 (Ticket, Message).

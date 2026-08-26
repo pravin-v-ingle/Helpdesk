@@ -2,6 +2,9 @@ node_modules/
 dist/
 build/
 
+# Prisma generated client
+server/src/generated/
+
 .env
 .env.local
 .env.*.local
