@@ -10,5 +10,89 @@ datasource db {
   provider = "postgresql"
 }
 
-// Models are added in Phase 2 of implementation-plan.md (User, Session),
-// then Phase 3 (Ticket, Message).
+// Ticket and Message models are added in Phase 3 of implementation-plan.md.
+
+/// Who a user is allowed to be in the system. Admins manage other users;
+/// agents only work tickets. See project-scope.md.
+enum Role {
+  ADMIN
+  AGENT
+}
+
+// ---------------------------------------------------------------------------
+// Better Auth core models. These four tables are the schema Better Auth 1.7
+// expects; the field names are fixed by the library, so do not rename them
+// without a matching `fields` override in src/lib/auth.ts.
+//
+// Credentials live on Account (`password`, hashed), not on User.
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String    @id
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  /// Application role. Server-owned: `input: false` in src/lib/auth.ts stops
+  /// it being set through any Better Auth request body.
+  role          Role      @default(AGENT)
+  /// Deactivated users keep their rows and their ticket history but cannot
+  /// sign in. Deactivating also deletes their sessions.
+  active        Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  sessions      Session[]
+  accounts      Account[]
+}
+
+/// One row per active login. Deleted on sign-out, which is what makes a
+/// session revocable server-side.
+model Session {
+  id        String   @id
+  token     String   @unique
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+/// Credentials and linked providers. For email/password sign-in, `providerId`
+/// is "credential" and `password` holds the hash.
+model Account {
+  id                    String    @id
+  issuer                String
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([issuer, accountId])
+  @@index([userId])
+}
+
+/// Short-lived tokens for email verification and password reset. Unused until
+/// those flows are switched on, but part of the core schema.
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+}

@@ -26,16 +26,26 @@ Tasks are numbered `<phase>.<task>`. Each phase ends with something that works a
 
 ## Phase 2 - Authentication and users
 
-- [ ] 2.1 Add the `User` and `Session` models with the `Role` enum to the Prisma schema and migrate.
-- [ ] 2.2 Add password hashing and verification helpers.
-- [ ] 2.3 Add session creation - random token, store its hash, set an expiry.
-- [ ] 2.4 Implement `POST /api/auth/login`, setting the session cookie.
-- [ ] 2.5 Implement `POST /api/auth/logout`, deleting the session row.
-- [ ] 2.6 Implement `GET /api/auth/me` for restoring client state on load.
-- [ ] 2.7 Add `requireAuth()` middleware.
-- [ ] 2.8 Add `requireRole('ADMIN')` middleware.
-- [ ] 2.9 Write the seed script that creates the initial admin account.
-- [ ] 2.10 Implement admin user endpoints: list, create agent, edit, deactivate.
+Tasks 2.2 to 2.6 were written before **Better Auth** was adopted. It supplies
+the hashing, the session table and the endpoints, so those tasks are met by
+configuring it rather than by writing the code. The endpoint names are its own:
+
+| Plan | Actual |
+|---|---|
+| `POST /api/auth/login` | `POST /api/auth/sign-in/email` |
+| `POST /api/auth/logout` | `POST /api/auth/sign-out` |
+| `GET /api/auth/me` | `GET /api/me` (ours, wrapping Better Auth's session) |
+
+- [x] 2.1 Add the `User` and `Session` models with the `Role` enum to the Prisma schema and migrate.
+- [x] 2.2 Add password hashing and verification helpers. *(Better Auth)*
+- [x] 2.3 Add session creation - random token, store its hash, set an expiry. *(Better Auth)*
+- [x] 2.4 Implement `POST /api/auth/login`, setting the session cookie. *(Better Auth)*
+- [x] 2.5 Implement `POST /api/auth/logout`, deleting the session row. *(Better Auth)*
+- [x] 2.6 Implement `GET /api/auth/me` for restoring client state on load.
+- [x] 2.7 Add `requireAuth()` middleware.
+- [x] 2.8 Add `requireRole('ADMIN')` middleware.
+- [x] 2.9 Write the seed script that creates the initial admin account.
+- [x] 2.10 Implement admin user endpoints: list, create agent, edit, deactivate.
 - [ ] 2.11 Build the login page.
 - [ ] 2.12 Build the auth context and protected route wrapper.
 - [ ] 2.13 Build the admin user management page.

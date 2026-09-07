@@ -56,55 +56,57 @@ server/
 
 ## Authentication
 
-**Database-backed sessions** - no JWTs.
+**Better Auth** (`better-auth`, email and password only) over **database-backed
+sessions** - no JWTs.
+
+Better Auth was adopted after this document was first written. It replaces the
+hand-rolled hashing, token generation and login/logout handlers this document
+originally specified; what it does not replace is the choice of database sessions over JWTs, which
+still holds and is why the configuration deliberately turns off the features
+that would move session state out of Postgres.
 
 How it works:
 
-1. User posts credentials to `POST /api/auth/login`.
-2. Password verified against a securely hashed stored value.
-3. Server generates a cryptographically random opaque session token (32 bytes), stores its **hash** in the `Session` table, and returns the raw token in a cookie.
-4. Cookie flags: `httpOnly`, `secure`, `sameSite`, and a matching `maxAge`.
-5. Auth middleware looks up the session on each request, rejects expired sessions, and attaches the user and role to the request.
-6. `POST /api/auth/logout` deletes the session row. The session is immediately dead server-side, which is the main reason for choosing sessions over JWTs.
+1. User posts credentials to `POST /api/auth/sign-in/email`.
+2. Better Auth verifies the password against the hash on the `Account` row
+   (credentials live on `Account`, not `User`).
+3. A `Session` row is written and the token returned in an `httpOnly` cookie.
+4. `requireAuth()` calls `auth.api.getSession()` on each request, which reads
+   the session from Postgres, and attaches the user and role to the request.
+5. `POST /api/auth/sign-out` deletes the session row. The session is immediately
+   dead server-side, which is the main reason for choosing sessions over JWTs.
 
-Details:
+Configuration that matters (`server/src/lib/auth.ts`):
 
-- **Sliding expiry**: sessions last 7 days, refreshed on activity.
-- **Cleanup**: a scheduled task deletes expired sessions daily.
-- **No self-registration.** The database is seeded with the initial Admin account (`prisma/seed.ts`, credentials from environment variables, password change forced on first login). Admins create agent accounts from the UI.
-- **Roles**: `ADMIN` and `AGENT` as an enum on the user record. Route middleware `requireAuth()` and `requireRole('ADMIN')` enforce access.
-- **Deactivation**: deactivating a user deletes their sessions, logging them out everywhere.
+- **No `secondaryStorage`, no `session.cookieCache`.** Both would serve sessions
+  from somewhere other than the database and make revocation lazy. Every request
+  pays a query; that is the trade being bought.
+- **Sliding expiry**: sessions last 7 days, refreshed on activity (the default).
+- **No self-registration.** Better Auth's own `disableSignUp` is *not* used - it
+  blocks the endpoint handler, which `auth.api.signUpEmail()` also runs through,
+  so it would break admin-created accounts too. Instead
+  `blockPublicSignUp` in `app.ts` 404s `/api/auth/sign-up/*` in front of the
+  Better Auth handler. In-process calls bypass Express and still work, which is
+  how the seed script and `POST /api/users` create accounts.
+- **Roles**: `ADMIN` and `AGENT`, a Prisma enum on `User`, declared to Better
+  Auth as an additional field with `input: false` so no request body can set it.
+  `requireAuth()` and `requireRole('ADMIN')` enforce access.
+- **Deactivation**: `active` on `User`. Deactivating deletes the user's sessions
+  in the same transaction, and a `session.create.before` hook refuses to issue a
+  new one, so the credentials stop working rather than just the current session.
+- **Lockout guards**: a user cannot deactivate or demote themselves, and the last
+  active admin cannot be removed.
+- **Seeding**: `prisma/seed.ts` creates the initial admin from
+  `SEED_ADMIN_EMAIL` / `SEED_ADMIN_NAME` / `SEED_ADMIN_PASSWORD`. It is
+  idempotent - an existing admin is left alone. Forcing a password change on
+  first login is not implemented yet.
 
-Schema sketch:
+Better Auth owns the shape of `User`, `Session`, `Account` and `Verification`;
+the live definitions are in `server/prisma/schema.prisma`. The sketch that used
+to sit here (`passwordHash` on `User`, a hashed `tokenHash` column) no longer
+matches and has been removed rather than left to mislead.
 
-```prisma
-enum Role {
-  ADMIN
-  AGENT
-}
-
-model User {
-  id           String    @id @default(uuid())
-  email        String    @unique
-  passwordHash String
-  name         String
-  role         Role      @default(AGENT)
-  isActive     Boolean   @default(true)
-  createdAt    DateTime  @default(now())
-  sessions     Session[]
-}
-
-model Session {
-  id        String   @id @default(uuid())
-  tokenHash String   @unique
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt DateTime
-  createdAt DateTime @default(now())
-
-  @@index([userId])
-}
-```
+Still outstanding: a scheduled task to delete expired sessions.
 
 **Cookie and CORS note**: the React app and the Express API are separate origins in development. Either serve both behind one domain in production (reverse proxy `/api` to Express) and use `sameSite: 'lax'`, or configure CORS with `credentials: true` and `sameSite: 'none'` plus `secure`. Serving from one domain is simpler and more secure - prefer it.
 

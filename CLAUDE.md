@@ -35,7 +35,9 @@ has no build or transpile step.
 
 - Client: React 19 + TypeScript on Vite 8
 - Server: Express 5 + TypeScript on Bun
-- Database: PostgreSQL with Prisma (not yet added)
+- Database: PostgreSQL with Prisma 7 (driver adapter `@prisma/adapter-pg`;
+  client generated to `server/src/generated/prisma`)
+- Auth: Better Auth, email and password, database-backed sessions
 - AI: Claude API via `@anthropic-ai/sdk`, default model `claude-opus-5` (not yet added)
 - Email: SendGrid or Mailgun, inbound webhook plus outbound send (not yet added)
 
@@ -92,9 +94,27 @@ server/          Express API
 
 ## State
 
-Phase 1 of the implementation plan is partly done: repository, Express server,
-and React client are set up and verified working together. PostgreSQL and Prisma
-are next, followed by authentication in Phase 2.
+Phase 1 is done. Phase 2 is done on the server and untouched on the client.
 
-Nothing beyond the health endpoint exists yet - no database, no models, no auth,
-no tickets, no AI, no email.
+Working: Postgres and Prisma with migrations, Better Auth over database-backed
+sessions, `requireAuth()` and `requireRole()`, `GET /api/me`, admin-only user
+management at `/api/users`, and a seed script for the initial admin.
+
+Not built yet: the whole client beyond the Vite starter (login page, auth
+context, protected routes, admin user page - tasks 2.11 to 2.14), and every
+later phase - no tickets, no AI, no email.
+
+Notes for working on auth:
+
+- **There is no self-registration.** `blockPublicSignUp` in `app.ts` 404s
+  `/api/auth/sign-up/*` before Better Auth sees it. Create accounts through
+  `POST /api/users` or the seed script, both of which call
+  `auth.api.signUpEmail()` in-process. Do not remove that guard or set
+  `disableSignUp` instead - see the comments in `src/lib/auth.ts`.
+- **`role` and `active` are server-owned.** They are declared to Better Auth
+  with `input: false`, so no request body can set them; the users service writes
+  them through Prisma.
+- **Bun installs with an isolated `node_modules`.** Undeclared transitive
+  packages such as `@better-auth/core` are not resolvable from our code. Use the
+  public `auth.api` / `auth.$context` surface rather than importing internals.
+- Run `bun run db:seed` after migrating a fresh database.

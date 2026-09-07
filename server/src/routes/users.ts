@@ -1,0 +1,94 @@
+import { Router } from "express";
+import type { Role } from "../generated/prisma/client.ts";
+import { requireAuth } from "../middleware/require-auth.ts";
+import { requireRole } from "../middleware/require-role.ts";
+import { HttpError } from "../middleware/error-handler.ts";
+import * as users from "../services/users.ts";
+
+export const usersRouter: Router = Router();
+
+// Everything below is admin-only. project-scope.md: agents cannot manage users.
+usersRouter.use(requireAuth, requireRole("ADMIN"));
+
+usersRouter.get("/", async (_req, res) => {
+  res.json({ users: await users.listUsers() });
+});
+
+usersRouter.get("/:id", async (req, res) => {
+  res.json({ user: await users.getUser(req.params.id) });
+});
+
+usersRouter.post("/", async (req, res) => {
+  const body = req.body ?? {};
+
+  const user = await users.createUser({
+    name: requireString(body.name, "name"),
+    email: requireEmail(body.email),
+    password: requireString(body.password, "password"),
+    role: parseRole(body.role) ?? "AGENT",
+  });
+
+  res.status(201).json({ user });
+});
+
+usersRouter.patch("/:id", async (req, res) => {
+  const body = req.body ?? {};
+  const id = req.params.id;
+  const actingUserId = req.user!.id;
+
+  // `active: true` is the reactivate path. Deactivation goes through DELETE,
+  // which is also where the "not yourself" and "not the last admin" guards are.
+  if (body.active === false) {
+    res.json({ user: await users.deactivateUser(id, actingUserId) });
+    return;
+  }
+
+  let user = await users.updateUser(
+    id,
+    {
+      ...(body.name !== undefined && { name: requireString(body.name, "name") }),
+      ...(body.role !== undefined && { role: parseRoleOrThrow(body.role) }),
+    },
+    actingUserId,
+  );
+
+  if (body.active === true) user = await users.reactivateUser(id);
+
+  res.json({ user });
+});
+
+/** Deactivates rather than deletes - see the note on the service. */
+usersRouter.delete("/:id", async (req, res) => {
+  res.json({ user: await users.deactivateUser(req.params.id, req.user!.id) });
+});
+
+// --- input validation -------------------------------------------------------
+// Hand-rolled while the surface is this small. Worth swapping for a schema
+// library once tickets arrive in Phase 3.
+
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new HttpError(400, `${field} is required`);
+  }
+  return value;
+}
+
+function requireEmail(value: unknown): string {
+  const email = requireString(value, "email");
+  // Deliberately loose. The real check is that a person can receive mail there.
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    throw new HttpError(400, "email must be a valid email address");
+  }
+  return email;
+}
+
+function parseRole(value: unknown): Role | undefined {
+  if (value === undefined || value === null) return undefined;
+  return value === "ADMIN" || value === "AGENT" ? value : undefined;
+}
+
+function parseRoleOrThrow(value: unknown): Role {
+  const role = parseRole(value);
+  if (!role) throw new HttpError(400, "role must be ADMIN or AGENT");
+  return role;
+}

@@ -25,10 +25,26 @@ function optionalNumber(name: string, fallback: number): number {
   return parsed;
 }
 
+const port = optionalNumber("PORT", 3000);
+
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? "development",
-  port: optionalNumber("PORT", 3000),
+  port,
   databaseUrl: required("DATABASE_URL"),
+  /** Signing secret for Better Auth session cookies. */
+  betterAuthSecret: required("BETTER_AUTH_SECRET"),
+  /** Public origin the auth endpoints are served from. */
+  betterAuthUrl: process.env.BETTER_AUTH_URL ?? `http://localhost:${port}`,
+  /**
+   * The initial admin account, read by `prisma/seed.ts` only. Optional here
+   * because the API itself does not need them - the seed script exits with its
+   * own message when they are missing, rather than blocking every boot.
+   */
+  seedAdmin: {
+    email: process.env.SEED_ADMIN_EMAIL,
+    name: process.env.SEED_ADMIN_NAME,
+    password: process.env.SEED_ADMIN_PASSWORD,
+  },
 } as const;
 
 export const isProduction = env.nodeEnv === "production";
