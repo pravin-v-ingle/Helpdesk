@@ -106,15 +106,19 @@ later phase - no tickets, no AI, no email.
 
 Notes for working on auth:
 
-- **There is no self-registration.** `blockPublicSignUp` in `app.ts` 404s
-  `/api/auth/sign-up/*` before Better Auth sees it. Create accounts through
-  `POST /api/users` or the seed script, both of which call
-  `auth.api.signUpEmail()` in-process. Do not remove that guard or set
-  `disableSignUp` instead - see the comments in `src/lib/auth.ts`.
+- **There is no self-registration.** `emailAndPassword.disableSignUp` is on, and
+  `blockPublicSignUp` in `app.ts` 404s `/api/auth/sign-up/*` in front of the
+  handler as well. `auth.api.signUpEmail()` is refused too - it runs through the
+  same handler. Create accounts with `createUserWithPassword()` from
+  `src/lib/auth-accounts.ts`, as `POST /api/users` and the seed script do.
 - **`role` and `active` are server-owned.** They are declared to Better Auth
   with `input: false`, so no request body can set them; the users service writes
   them through Prisma.
 - **Bun installs with an isolated `node_modules`.** Undeclared transitive
   packages such as `@better-auth/core` are not resolvable from our code. Use the
   public `auth.api` / `auth.$context` surface rather than importing internals.
-- Run `bun run db:seed` after migrating a fresh database.
+- Run `bun run db:seed` after migrating a fresh database. It creates the admin
+  from `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` (`SEED_ADMIN_NAME` optional,
+  defaults to "Admin") and never resets an existing account's password. If the
+  email is taken by a non-admin or deactivated row it reports and exits 1;
+  `bun run db:seed -- --repair` promotes that row and does reset its password.

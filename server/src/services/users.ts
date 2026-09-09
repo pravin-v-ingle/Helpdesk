@@ -1,7 +1,6 @@
-import { APIError } from "better-auth/api";
 import type { Role } from "../generated/prisma/client.ts";
 import { prisma } from "../lib/prisma.ts";
-import { auth } from "../lib/auth.ts";
+import { createUserWithPassword } from "../lib/auth-accounts.ts";
 import { HttpError } from "../middleware/error-handler.ts";
 
 /** The user shape the API returns. Never widen this to `include` credentials. */
@@ -53,25 +52,19 @@ export async function createUser(input: {
 
   // Goes through Better Auth rather than Prisma so the password is hashed with
   // the same parameters sign-in verifies against, and the credential Account
-  // row is written the way Better Auth expects it. `autoSignIn` is off, so no
-  // session is created for the new user.
-  let created;
-  try {
-    created = await auth.api.signUpEmail({
-      body: { name: input.name.trim(), email, password: input.password },
-    });
-  } catch (err) {
-    if (err instanceof APIError) {
-      // Password length is the realistic case here; Better Auth enforces it.
-      throw new HttpError(400, err.message);
-    }
-    throw err;
-  }
+  // row is written the way Better Auth expects it. Sign-up is disabled, so this
+  // takes the internal-adapter path - see lib/auth-accounts.ts.
+  const created = await createUserWithPassword({
+    name: input.name.trim(),
+    email,
+    password: input.password,
+  });
 
-  // `role` is `input: false` in the auth config, so sign-up always writes the
-  // AGENT default. Anything else is set here, deliberately, after the fact.
+  // `role` is `input: false` in the auth config and the create path above never
+  // sets it, so every new user starts as the AGENT default. Anything else is
+  // set here, deliberately, after the fact.
   return prisma.user.update({
-    where: { id: created.user.id },
+    where: { id: created.id },
     data: { role: input.role },
     select: publicUserSelect,
   });

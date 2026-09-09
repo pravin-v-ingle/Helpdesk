@@ -22,15 +22,18 @@ export const auth = betterAuth({
 
   emailAndPassword: {
     enabled: true,
-    // `disableSignUp` is deliberately NOT set here. It would block the endpoint
-    // handler itself, and `auth.api.signUpEmail()` runs through that same
-    // handler - so it would also break the admin "create agent" flow and the
-    // seed script, which are the only two callers we want.
+    // project-scope.md: "There is no self-registration." This turns the sign-up
+    // endpoint off inside Better Auth, so it refuses regardless of how the
+    // request reaches it.
     //
-    // Public sign-up is closed off one layer up instead, by `blockPublicSignUp`
-    // in app.ts, which 404s the HTTP route before Better Auth ever sees it.
-    // In-process calls to auth.api.* bypass Express and still work.
-    disableSignUp: false,
+    // It is absolute: `auth.api.signUpEmail()` runs through the same handler
+    // and is refused too. The seed script and POST /api/users therefore create
+    // accounts through lib/auth-accounts.ts, which uses the internal adapter.
+    //
+    // app.ts also 404s the route in front of Better Auth. That is deliberate
+    // duplication - it keeps a closed endpoint from advertising itself, and
+    // neither layer depends on the other being present.
+    disableSignUp: true,
     // Creating an agent must not hand the admin that agent's session.
     autoSignIn: false,
   },

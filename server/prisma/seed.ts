@@ -3,21 +3,34 @@
  * one admin already in place and no self-registration, so this is the only way
  * a first account comes into existence.
  *
- * Idempotent - re-running it against a database that already has the admin
- * reports and exits rather than resetting the password.
+ *   bun run db:seed            create the admin, or report if it cannot
+ *   bun run db:seed -- --repair   also fix an existing row and reset its password
  *
- *   bun run db:seed
+ * Credentials come from SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD in server/.env
+ * (SEED_ADMIN_NAME is optional). Nothing is hardcoded here.
+ *
+ * The plain run never touches an existing account's password, so it is safe to
+ * re-run against a live database. `--repair` does change it, which is why it is
+ * opt-in.
  */
+import { Role } from "../src/generated/prisma/client.ts";
 import { env } from "../src/env.ts";
 import { prisma } from "../src/lib/prisma.ts";
-import { auth } from "../src/lib/auth.ts";
+import {
+  createUserWithPassword,
+  setUserPassword,
+} from "../src/lib/auth-accounts.ts";
+
+const repair = process.argv.includes("--repair");
 
 async function main() {
-  const { email, name, password } = env.seedAdmin;
+  const { email, password } = env.seedAdmin;
+  const name = env.seedAdmin.name?.trim() || "Admin";
 
-  if (!email || !name || !password) {
+  if (!email || !password) {
     console.error(
-      "Set SEED_ADMIN_EMAIL, SEED_ADMIN_NAME and SEED_ADMIN_PASSWORD in server/.env first.",
+      "Set SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD in server/.env first.\n" +
+        "See server/.env.example.",
     );
     process.exit(1);
   }
@@ -26,27 +39,65 @@ async function main() {
 
   const existing = await prisma.user.findUnique({
     where: { email: normalisedEmail },
-    select: { id: true, role: true },
+    select: { id: true, role: true, active: true },
   });
 
-  if (existing) {
+  if (!existing) {
+    // Through Better Auth, not Prisma, so the password hash and the credential
+    // Account row match what sign-in expects. Sign-up is disabled, so this uses
+    // the internal adapter - see lib/auth-accounts.ts.
+    const user = await createUserWithPassword({
+      name,
+      email: normalisedEmail,
+      password,
+    });
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { role: Role.ADMIN },
+    });
+
+    console.log(`Created admin ${normalisedEmail}.`);
+    return;
+  }
+
+  if (existing.role === Role.ADMIN && existing.active) {
     console.log(`Admin ${normalisedEmail} already exists - nothing to do.`);
     return;
   }
 
-  // Through Better Auth, not Prisma, so the password hash and the credential
-  // Account row match what sign-in expects. Public sign-up is blocked at the
-  // HTTP layer only, so this in-process call still works - see lib/auth.ts.
-  const { user } = await auth.api.signUpEmail({
-    body: { name: name.trim(), email: normalisedEmail, password },
-  });
+  // The row exists but is not a usable admin - typically left over from earlier
+  // testing. Saying "already exists" here would leave someone unable to sign in
+  // with no clue why, so this reports the mismatch instead of passing quietly.
+  const problems = [
+    existing.role !== Role.ADMIN && `its role is ${existing.role}, not ${Role.ADMIN}`,
+    !existing.active && "it is deactivated",
+  ].filter(Boolean);
 
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { role: "ADMIN" },
-  });
+  if (!repair) {
+    console.error(
+      `${normalisedEmail} already exists, but ${problems.join(" and ")}.\n` +
+        "Re-run with --repair to promote it to an active ADMIN and reset its\n" +
+        "password to SEED_ADMIN_PASSWORD:\n" +
+        "\n    bun run db:seed -- --repair\n",
+    );
+    process.exit(1);
+  }
 
-  console.log(`Created admin ${normalisedEmail}.`);
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: existing.id },
+      data: { name, role: Role.ADMIN, active: true },
+    }),
+    // Any session it holds was issued under the old role. Drop them so the
+    // next sign-in picks the new one up.
+    prisma.session.deleteMany({ where: { userId: existing.id } }),
+  ]);
+
+  await setUserPassword(existing.id, password);
+
+  console.log(
+    `Repaired ${normalisedEmail}: now an active ADMIN, password reset, sessions cleared.`,
+  );
 }
 
 main()

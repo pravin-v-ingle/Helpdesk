@@ -82,12 +82,14 @@ Configuration that matters (`server/src/lib/auth.ts`):
   from somewhere other than the database and make revocation lazy. Every request
   pays a query; that is the trade being bought.
 - **Sliding expiry**: sessions last 7 days, refreshed on activity (the default).
-- **No self-registration.** Better Auth's own `disableSignUp` is *not* used - it
-  blocks the endpoint handler, which `auth.api.signUpEmail()` also runs through,
-  so it would break admin-created accounts too. Instead
-  `blockPublicSignUp` in `app.ts` 404s `/api/auth/sign-up/*` in front of the
-  Better Auth handler. In-process calls bypass Express and still work, which is
-  how the seed script and `POST /api/users` create accounts.
+- **No self-registration.** `emailAndPassword.disableSignUp` is on, so Better
+  Auth refuses sign-up however the request arrives. That is absolute:
+  `auth.api.signUpEmail()` runs through the same handler and is refused too, so
+  the seed script and `POST /api/users` create accounts through
+  `lib/auth-accounts.ts`, which uses the internal adapter - the same path Better
+  Auth's own admin plugin takes. `blockPublicSignUp` in `app.ts` additionally
+  404s the route in front of the handler, so a disabled endpoint does not
+  advertise itself; neither layer depends on the other.
 - **Roles**: `ADMIN` and `AGENT`, a Prisma enum on `User`, declared to Better
   Auth as an additional field with `input: false` so no request body can set it.
   `requireAuth()` and `requireRole('ADMIN')` enforce access.
@@ -97,9 +99,12 @@ Configuration that matters (`server/src/lib/auth.ts`):
 - **Lockout guards**: a user cannot deactivate or demote themselves, and the last
   active admin cannot be removed.
 - **Seeding**: `prisma/seed.ts` creates the initial admin from
-  `SEED_ADMIN_EMAIL` / `SEED_ADMIN_NAME` / `SEED_ADMIN_PASSWORD`. It is
-  idempotent - an existing admin is left alone. Forcing a password change on
-  first login is not implemented yet.
+  `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` (`SEED_ADMIN_NAME` optional).
+  Idempotent - an existing active admin is left alone, and a plain run never
+  changes a password, so it is safe against a live database. An email taken by
+  a non-admin or deactivated row is reported rather than skipped;
+  `--repair` promotes that row, resets its password and clears its sessions.
+  Forcing a password change on first login is not implemented yet.
 
 Better Auth owns the shape of `User`, `Session`, `Account` and `Verification`;
 the live definitions are in `server/prisma/schema.prisma`. The sketch that used
