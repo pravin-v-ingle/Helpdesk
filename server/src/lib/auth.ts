@@ -83,7 +83,8 @@ export const auth = betterAuth({
     },
   },
 
-  // The Vite dev server. In development the client proxies /api, so this only
-  // matters for requests made straight to the API from the browser.
-  trustedOrigins: ["http://localhost:5173"],
+  // From TRUSTED_ORIGINS, defaulting to the Vite dev server outside production.
+  // In development the client proxies /api, so this only matters for requests
+  // made straight to the API from the browser.
+  trustedOrigins: env.trustedOrigins,
 });

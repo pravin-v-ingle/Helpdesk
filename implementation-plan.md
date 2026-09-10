@@ -46,10 +46,10 @@ configuring it rather than by writing the code. The endpoint names are its own:
 - [x] 2.8 Add `requireRole('ADMIN')` middleware.
 - [x] 2.9 Write the seed script that creates the initial admin account.
 - [x] 2.10 Implement admin user endpoints: list, create agent, edit, deactivate.
-- [ ] 2.11 Build the login page.
-- [ ] 2.12 Build the auth context and protected route wrapper.
+- [x] 2.11 Build the login page.
+- [x] 2.12 Build the auth context and protected route wrapper.
 - [ ] 2.13 Build the admin user management page.
-- [ ] 2.14 Redirect to login on a 401 anywhere in the client.
+- [x] 2.14 Redirect to login on a 401 anywhere in the client.
 
 **Done when**: the seeded admin can log in, create an agent, and that agent can log in. Agents cannot reach admin pages.
 

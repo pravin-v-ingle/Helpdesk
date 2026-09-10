@@ -61,6 +61,12 @@ Run `bun run typecheck` before considering a change complete.
 ```
 client/          React app
   src/
+    auth/        auth context, provider, protected route
+    components/  shared UI - app shell, nav bar
+    pages/       one component per route
+    lib/         API fetch helper, Better Auth browser client
+    App.tsx      route table
+    main.tsx     entry point
   vite.config.ts   proxies /api to the server in development
 server/          Express API
   src/
@@ -94,18 +100,34 @@ server/          Express API
 
 ## State
 
-Phase 1 is done. Phase 2 is done on the server and untouched on the client.
+Phase 1 is done. Phase 2 is done on the server, and all of it is done on the
+client except the admin user page.
 
-Working: Postgres and Prisma with migrations, Better Auth over database-backed
-sessions, `requireAuth()` and `requireRole()`, `GET /api/me`, admin-only user
-management at `/api/users`, and a seed script for the initial admin.
+Working on the server: Postgres and Prisma with migrations, Better Auth over
+database-backed sessions, `requireAuth()` and `requireRole()`, `GET /api/me`,
+admin-only user management at `/api/users`, and a seed script for the initial
+admin.
 
-Not built yet: the whole client beyond the Vite starter (login page, auth
-context, protected routes, admin user page - tasks 2.11 to 2.14), and every
-later phase - no tickets, no AI, no email.
+Working on the client: the login page at `/login`, an auth context that restores
+the session from `GET /api/me` on load, a `ProtectedRoute` wrapper, a nav bar
+showing the signed-in user with a sign-out button, and a redirect to `/login` on
+any 401. Routing is React Router v7 in declarative mode; styling is plain CSS
+built on the custom properties in `index.css`, not Tailwind.
+
+Not built yet: the admin user management page (task 2.13), and every later
+phase - no tickets, no AI, no email. The home page at `/` is a placeholder that
+the phase 7 dashboard replaces.
 
 Notes for working on auth:
 
+- **The client reads the user from `GET /api/me`, not Better Auth's
+  `useSession()`.** `/api/me` returns the same `PublicUser` the `/api/users`
+  endpoints return, so there is one user type on the client rather than two.
+  `client/src/lib/auth-client.ts` is used only for `signIn.email` and `signOut`.
+- **Client requests go through `apiFetch()`** in `client/src/lib/api.ts`, which
+  is where the 401-to-login redirect lives. Note that `requireRole()` answers
+  403, not 401, so an agent hitting an admin route is not bounced to the login
+  page.
 - **There is no self-registration.** `emailAndPassword.disableSignUp` is on, and
   `blockPublicSignUp` in `app.ts` 404s `/api/auth/sign-up/*` in front of the
   handler as well. `auth.api.signUpEmail()` is refused too - it runs through the

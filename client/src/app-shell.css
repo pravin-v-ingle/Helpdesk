@@ -1,0 +1,159 @@
+/* App shell. Everything here is built from the tokens in index.css, so dark
+   mode follows automatically.
+
+   Named app-shell.css rather than app.css because the deleted Vite starter
+   sheet was App.css, and a case-only rename is invisible to git on Windows. */
+
+.navbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.navbar__brand {
+  font-family: var(--heading);
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--text-h);
+  letter-spacing: -0.2px;
+}
+
+.navbar__user {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.navbar__name {
+  font-size: 15px;
+  color: var(--text-h);
+}
+
+.badge {
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+}
+
+.page {
+  flex: 1;
+  padding: 32px 24px;
+}
+
+.page--centred {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.muted {
+  font-size: 15px;
+  color: var(--text);
+}
+
+/* Login card */
+
+.card {
+  width: 360px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 28px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+
+.card__title {
+  font-size: 28px;
+  letter-spacing: -0.5px;
+  margin: 0;
+}
+
+/* The subtitle sits directly under the title. */
+.card__title + .muted {
+  margin-top: -12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field__label {
+  font-size: 14px;
+  color: var(--text-h);
+}
+
+.input {
+  font: inherit;
+  font-size: 16px;
+  padding: 10px 12px;
+  color: var(--text-h);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.input:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.button {
+  font: inherit;
+  font-size: 15px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #fff;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.button:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.button--quiet {
+  color: var(--text-h);
+  background: transparent;
+  border-color: var(--border);
+}
+
+.button--quiet:hover:not(:disabled) {
+  filter: none;
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+/* Reserves its line so the form does not jump when a message appears. */
+.error {
+  min-height: 20px;
+  font-size: 14px;
+  color: #dc2626;
+}
+
+@media (prefers-color-scheme: dark) {
+  .error {
+    color: #f87171;
+  }
+}

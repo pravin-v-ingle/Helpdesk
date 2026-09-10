@@ -6,7 +6,7 @@ Technology decisions for the AI-powered ticket management system. See `project-s
 
 | Layer      | Choice                                         |
 | ---------- | ---------------------------------------------- |
-| Frontend   | React + TypeScript, Tailwind CSS, React Router |
+| Frontend   | React + TypeScript on Vite, React Router, plain CSS |
 | Backend    | Node.js + Express + TypeScript                 |
 | Database   | PostgreSQL                                     |
 | ORM        | Prisma                                         |
@@ -17,10 +17,23 @@ Technology decisions for the AI-powered ticket management system. See `project-s
 
 ## Frontend
 
-- **React 19 + TypeScript**.
-- **Tailwind CSS** for styling.
-- **React Router v7** for routing, with protected routes gated on the current session.
-- Key routes: `/login`, `/tickets` (list, filter, sort), `/tickets/:id` (detail), `/admin/users` (admin only).
+- **React 19 + TypeScript**, built and served by **Vite 8**.
+- **React Router v7** for routing, with protected routes gated on the current
+  session. `ProtectedRoute` reads the auth context and redirects anonymous
+  visitors to `/login`.
+- **Plain CSS with custom properties** for styling, not Tailwind. The Vite
+  starter already shipped a token layer in `client/src/index.css` - colours,
+  fonts, and a full `prefers-color-scheme: dark` override - and the app shell
+  in `client/src/app-shell.css` is built from those tokens, so dark mode works
+  without extra work. Adding Tailwind would have meant discarding that layer
+  and a build-config change for a UI this small. Revisit if the component count
+  grows enough that hand-written CSS starts to duplicate itself.
+- Key routes: `/login`, `/` (home), `/tickets` (list, filter, sort),
+  `/tickets/:id` (detail), `/admin/users` (admin only).
+- The **Better Auth browser client** (`client/src/lib/auth-client.ts`) handles
+  sign-in and sign-out. The current user comes from `GET /api/me` rather than
+  its `useSession()` hook, so the client has one user shape - see the comment on
+  that route.
 
 ## Backend
 
@@ -163,7 +176,6 @@ Inbound email processing cannot happen inside the webhook request - AI calls tak
 - **SendGrid vs Mailgun** - compare inbound parse behaviour, deliverability, and pricing at expected volume.
 - **Cloud provider and region** - blocked on the data-residency and PII policy question.
 - **Whether student personal data may be sent to a third-party LLM API** - must be answered before build starts, as it may require a redaction layer between email parsing and the Claude calls.
-- **Frontend build tooling** - React needs a bundler and dev server.
 - **Password hashing algorithm** - required by the login flow above.
 - **Job queue library** - required by background processing above.
 - **Validation library** - required at the API boundary.

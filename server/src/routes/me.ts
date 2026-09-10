@@ -22,4 +22,3 @@ export const meRouter: Router = Router();
 meRouter.get("/", requireAuth, async (req, res) => {
   res.json({ user: await users.getUser(req.user!.id) });
 });
-1
