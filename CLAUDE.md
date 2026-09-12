@@ -111,8 +111,9 @@ admin.
 Working on the client: the login page at `/login`, an auth context that restores
 the session from `GET /api/me` on load, a `ProtectedRoute` wrapper, a nav bar
 showing the signed-in user with a sign-out button, and a redirect to `/login` on
-any 401. Routing is React Router v7 in declarative mode; styling is plain CSS
-built on the custom properties in `index.css`, not Tailwind.
+any 401. Routing is React Router v7 in declarative mode; styling is Tailwind
+CSS v4 utility classes (Vite plugin, `@import 'tailwindcss'` in `index.css`,
+no config file, no custom stylesheet), with `dark:` variants for dark mode.
 
 Not built yet: the admin user management page (task 2.13), and every later
 phase - no tickets, no AI, no email. The home page at `/` is a placeholder that

@@ -11,9 +11,11 @@ export function HomePage() {
   const { user } = auth
 
   return (
-    <main className="page">
-      <h1>Welcome, {user.name}</h1>
-      <p className="muted">
+    <main className="flex-1 px-6 py-8">
+      <h1 className="mb-3 text-3xl font-medium tracking-tight text-gray-950 dark:text-gray-100">
+        Welcome, {user.name}
+      </h1>
+      <p className="text-[15px]">
         You are signed in as {user.email} with the{' '}
         {user.role === 'ADMIN' ? 'admin' : 'agent'} role.
       </p>

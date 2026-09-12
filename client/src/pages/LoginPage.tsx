@@ -72,17 +72,24 @@ export function LoginPage() {
   })
 
   return (
-    <main className="page page--centred">
-      <form className="card" onSubmit={(event) => void onSubmit(event)} noValidate>
-        <h1 className="card__title">Sign in</h1>
-        <p className="muted">Helpdesk agent and admin access.</p>
+    <main className="flex flex-1 flex-col items-center justify-center px-6 py-8">
+      <form
+        className="flex w-90 max-w-full flex-col gap-4 rounded-xl border border-gray-200 bg-white p-7 shadow-lg dark:border-gray-800 dark:bg-gray-950 dark:shadow-black/40"
+        onSubmit={(event) => void onSubmit(event)}
+        noValidate
+      >
+        <h1 className="text-[28px] font-medium tracking-tight text-gray-950 dark:text-gray-100">
+          Sign in
+        </h1>
+        {/* Pulled up to sit directly under the title. */}
+        <p className="-mt-3 text-[15px]">Helpdesk agent and admin access.</p>
 
-        <label className="field" htmlFor="email">
-          <span className="field__label">Email</span>
+        <label className={fieldClass} htmlFor="email">
+          <span className={labelClass}>Email</span>
           <input
             id="email"
             type="email"
-            className="input"
+            className={inputClass}
             autoComplete="username"
             autoFocus
             aria-invalid={errors.email ? true : undefined}
@@ -90,39 +97,55 @@ export function LoginPage() {
             {...register('email')}
           />
           {errors.email && (
-            <span id="email-error" className="error error--field">
+            <span id="email-error" className={fieldErrorClass}>
               {errors.email.message}
             </span>
           )}
         </label>
 
-        <label className="field" htmlFor="password">
-          <span className="field__label">Password</span>
+        <label className={fieldClass} htmlFor="password">
+          <span className={labelClass}>Password</span>
           <input
             id="password"
             type="password"
-            className="input"
+            className={inputClass}
             autoComplete="current-password"
             aria-invalid={errors.password ? true : undefined}
             aria-describedby={errors.password ? 'password-error' : undefined}
             {...register('password')}
           />
           {errors.password && (
-            <span id="password-error" className="error error--field">
+            <span id="password-error" className={fieldErrorClass}>
               {errors.password.message}
             </span>
           )}
         </label>
 
-        {/* Announced to screen readers when sign-in is refused. */}
-        <p className="error" role="alert">
+        {/* Announced to screen readers when sign-in is refused. Reserves its
+            line so the form does not jump when a message appears. */}
+        <p className="min-h-5 text-sm text-red-600 dark:text-red-400" role="alert">
           {errors.root?.message}
         </p>
 
-        <button type="submit" className="button" disabled={isSubmitting}>
+        <button
+          type="submit"
+          className="cursor-pointer rounded-lg border border-purple-600 bg-purple-600 px-4 py-2.5 text-[15px] text-white enabled:hover:brightness-108 disabled:cursor-default disabled:opacity-60 dark:border-purple-400 dark:bg-purple-400"
+          disabled={isSubmitting}
+        >
           {isSubmitting ? 'Signing in…' : 'Sign in'}
         </button>
       </form>
     </main>
   )
 }
+
+const fieldClass = 'flex flex-col gap-1.5'
+
+const labelClass = 'text-sm text-gray-950 dark:text-gray-100'
+
+const inputClass =
+  'rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-base text-gray-950 focus-visible:border-purple-600 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-purple-600/50 aria-invalid:border-red-600 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100 dark:focus-visible:border-purple-400 dark:focus-visible:outline-purple-400/50 dark:aria-invalid:border-red-400'
+
+// Field-level messages sit under their input and only exist when shown, so
+// they reserve no space.
+const fieldErrorClass = 'text-[13px] text-red-600 dark:text-red-400'

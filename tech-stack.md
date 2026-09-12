@@ -6,7 +6,7 @@ Technology decisions for the AI-powered ticket management system. See `project-s
 
 | Layer      | Choice                                         |
 | ---------- | ---------------------------------------------- |
-| Frontend   | React + TypeScript on Vite, React Router, plain CSS |
+| Frontend   | React + TypeScript on Vite, React Router, Tailwind CSS |
 | Backend    | Node.js + Express + TypeScript                 |
 | Database   | PostgreSQL                                     |
 | ORM        | Prisma                                         |
@@ -21,13 +21,14 @@ Technology decisions for the AI-powered ticket management system. See `project-s
 - **React Router v7** for routing, with protected routes gated on the current
   session. `ProtectedRoute` reads the auth context and redirects anonymous
   visitors to `/login`.
-- **Plain CSS with custom properties** for styling, not Tailwind. The Vite
-  starter already shipped a token layer in `client/src/index.css` - colours,
-  fonts, and a full `prefers-color-scheme: dark` override - and the app shell
-  in `client/src/app-shell.css` is built from those tokens, so dark mode works
-  without extra work. Adding Tailwind would have meant discarding that layer
-  and a build-config change for a UI this small. Revisit if the component count
-  grows enough that hand-written CSS starts to duplicate itself.
+- **Tailwind CSS v4** for styling, via the first-party `@tailwindcss/vite`
+  plugin. `client/src/index.css` is just `@import 'tailwindcss'`; there is no
+  `tailwind.config` and no hand-written stylesheet. Utility classes live on the
+  elements, with `dark:` variants (which follow `prefers-color-scheme`) next to
+  their light counterparts. Page-wide defaults - background, text colour, the
+  full-height column layout - sit on `<body>` and `#root` in `index.html`.
+  This replaced the Vite starter's custom-property stylesheet once the shell,
+  login page and form controls were all restyling the same handful of tokens.
 - Key routes: `/login`, `/` (home), `/tickets` (list, filter, sort),
   `/tickets/:id` (detail), `/admin/users` (admin only).
 - The **Better Auth browser client** (`client/src/lib/auth-client.ts`) handles

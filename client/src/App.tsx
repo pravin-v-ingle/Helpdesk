@@ -3,7 +3,6 @@ import { ProtectedRoute } from './auth/ProtectedRoute.tsx'
 import { AppLayout } from './components/AppLayout.tsx'
 import { HomePage } from './pages/HomePage.tsx'
 import { LoginPage } from './pages/LoginPage.tsx'
-import './app-shell.css'
 
 /**
  * The route table. Later routes - `/tickets`, `/tickets/:id`, `/admin/users` -
