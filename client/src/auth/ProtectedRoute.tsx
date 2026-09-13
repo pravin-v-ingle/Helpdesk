@@ -12,7 +12,7 @@ export function ProtectedRoute() {
   if (auth.status === 'loading') {
     return (
       <main className="flex flex-1 flex-col items-center justify-center px-6 py-8">
-        <p className="text-[15px]">Loading…</p>
+        <p className="text-sm text-muted-foreground">Loading…</p>
       </main>
     )
   }

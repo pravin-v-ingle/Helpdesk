@@ -1,8 +1,24 @@
-import { zodResolver } from '@hookform/resolvers/zod'
-import { useForm } from 'react-hook-form'
-import { Navigate, useLocation, useNavigate } from 'react-router'
-import { z } from 'zod'
-import { useAuth } from '../auth/auth-context.ts'
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useForm } from "react-hook-form";
+import { Navigate, useLocation, useNavigate } from "react-router";
+import { z } from "zod";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Field,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { useAuth } from "../auth/auth-context.ts";
 
 /**
  * Client-side shape only. The server is still the authority on whether the
@@ -18,21 +34,21 @@ const loginSchema = z.object({
   email: z
     .string()
     .trim()
-    .min(1, 'Enter your email address.')
-    .pipe(z.email('Enter a valid email address.')),
-  password: z.string().min(1, 'Enter your password.'),
-})
+    .min(1, "Enter your email address.")
+    .pipe(z.email("Enter a valid email address.")),
+  password: z.string().min(1, "Enter your password."),
+});
 
-type LoginValues = z.infer<typeof loginSchema>
+type LoginValues = z.infer<typeof loginSchema>;
 
 /**
  * There is no sign-up link on purpose: self-registration is disabled on the
  * server, and admins create accounts through `POST /api/users`.
  */
 export function LoginPage() {
-  const auth = useAuth()
-  const navigate = useNavigate()
-  const location = useLocation()
+  const auth = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
 
   const {
     register,
@@ -41,111 +57,95 @@ export function LoginPage() {
     formState: { errors, isSubmitting },
   } = useForm<LoginValues>({
     resolver: zodResolver(loginSchema),
-    defaultValues: { email: '', password: '' },
-  })
+    defaultValues: { email: "", password: "" },
+  });
 
   // Wherever ProtectedRoute turned us away from, or the home page.
   const from =
-    typeof location.state === 'object' &&
+    typeof location.state === "object" &&
     location.state !== null &&
-    'from' in location.state &&
-    typeof location.state.from === 'string'
+    "from" in location.state &&
+    typeof location.state.from === "string"
       ? location.state.from
-      : '/'
+      : "/";
 
-  if (auth.status === 'authenticated') return <Navigate to={from} replace />
+  if (auth.status === "authenticated") return <Navigate to={from} replace />;
 
   const onSubmit = handleSubmit(async ({ email, password }) => {
     try {
-      const message = await auth.signIn(email, password)
+      const message = await auth.signIn(email, password);
       if (message) {
         // Whatever the server said - bad credentials, deactivated account.
         // `root` is react-hook-form's slot for errors that belong to the form
         // rather than to one field, and it clears itself on the next submit.
-        setError('root', { message })
-        return
+        setError("root", { message });
+        return;
       }
-      void navigate(from, { replace: true })
+      void navigate(from, { replace: true });
     } catch {
-      setError('root', { message: 'Could not reach the server. Please try again.' })
+      setError("root", {
+        message: "Could not reach the server. Please try again.",
+      });
     }
-  })
+  });
 
   return (
     <main className="flex flex-1 flex-col items-center justify-center px-6 py-8">
-      <form
-        className="flex w-90 max-w-full flex-col gap-4 rounded-xl border border-gray-200 bg-white p-7 shadow-lg dark:border-gray-800 dark:bg-gray-950 dark:shadow-black/40"
-        onSubmit={(event) => void onSubmit(event)}
-        noValidate
-      >
-        <h1 className="text-[28px] font-medium tracking-tight text-gray-950 dark:text-gray-100">
-          Sign in
-        </h1>
-        {/* Pulled up to sit directly under the title. */}
-        <p className="-mt-3 text-[15px]">Helpdesk agent and admin access.</p>
+      <Card className="w-full max-w-sm">
+        <CardHeader>
+          <CardTitle>Sign in</CardTitle>
+          <CardDescription>Helpdesk agent and admin access.</CardDescription>
+        </CardHeader>
 
-        <label className={fieldClass} htmlFor="email">
-          <span className={labelClass}>Email</span>
-          <input
-            id="email"
-            type="email"
-            className={inputClass}
-            autoComplete="username"
-            autoFocus
-            aria-invalid={errors.email ? true : undefined}
-            aria-describedby={errors.email ? 'email-error' : undefined}
-            {...register('email')}
-          />
-          {errors.email && (
-            <span id="email-error" className={fieldErrorClass}>
-              {errors.email.message}
-            </span>
-          )}
-        </label>
-
-        <label className={fieldClass} htmlFor="password">
-          <span className={labelClass}>Password</span>
-          <input
-            id="password"
-            type="password"
-            className={inputClass}
-            autoComplete="current-password"
-            aria-invalid={errors.password ? true : undefined}
-            aria-describedby={errors.password ? 'password-error' : undefined}
-            {...register('password')}
-          />
-          {errors.password && (
-            <span id="password-error" className={fieldErrorClass}>
-              {errors.password.message}
-            </span>
-          )}
-        </label>
-
-        {/* Announced to screen readers when sign-in is refused. Reserves its
-            line so the form does not jump when a message appears. */}
-        <p className="min-h-5 text-sm text-red-600 dark:text-red-400" role="alert">
-          {errors.root?.message}
-        </p>
-
-        <button
-          type="submit"
-          className="cursor-pointer rounded-lg border border-purple-600 bg-purple-600 px-4 py-2.5 text-[15px] text-white enabled:hover:brightness-108 disabled:cursor-default disabled:opacity-60 dark:border-purple-400 dark:bg-purple-400"
-          disabled={isSubmitting}
+        {/* The form wraps content and footer, so it has to carry the Card's
+            own column gap or the two sit flush. */}
+        <form
+          className="flex flex-col gap-(--card-spacing)"
+          onSubmit={(event) => void onSubmit(event)}
+          noValidate
         >
-          {isSubmitting ? 'Signing in…' : 'Sign in'}
-        </button>
-      </form>
+          <CardContent>
+            <FieldGroup>
+              <Field data-invalid={errors.email ? true : undefined}>
+                <FieldLabel htmlFor="email">Email</FieldLabel>
+                <Input
+                  id="email"
+                  type="email"
+                  autoComplete="username"
+                  autoFocus
+                  aria-invalid={errors.email ? true : undefined}
+                  {...register("email")}
+                />
+                <FieldError errors={[errors.email]} />
+              </Field>
+
+              <Field data-invalid={errors.password ? true : undefined}>
+                <FieldLabel htmlFor="password">Password</FieldLabel>
+                <Input
+                  id="password"
+                  type="password"
+                  autoComplete="current-password"
+                  aria-invalid={errors.password ? true : undefined}
+                  {...register("password")}
+                />
+                <FieldError errors={[errors.password]} />
+              </Field>
+            </FieldGroup>
+
+            {/* Announced to screen readers when sign-in is refused. Reserves
+                its line so the card does not jump when a message appears. */}
+            <p className="mt-2 min-h-2 text-sm text-destructive" role="alert">
+              {errors.root?.message}
+            </p>
+          </CardContent>
+
+          <CardFooter>
+            <Button type="submit" className="w-full" disabled={isSubmitting}>
+              {isSubmitting ? "Signing in…" : "Sign in"}
+            </Button>
+          </CardFooter>
+        </form>
+      </Card>
     </main>
-  )
+  );
 }
-
-const fieldClass = 'flex flex-col gap-1.5'
-
-const labelClass = 'text-sm text-gray-950 dark:text-gray-100'
-
-const inputClass =
-  'rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-base text-gray-950 focus-visible:border-purple-600 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-purple-600/50 aria-invalid:border-red-600 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100 dark:focus-visible:border-purple-400 dark:focus-visible:outline-purple-400/50 dark:aria-invalid:border-red-400'
-
-// Field-level messages sit under their input and only exist when shown, so
-// they reserve no space.
-const fieldErrorClass = 'text-[13px] text-red-600 dark:text-red-400'

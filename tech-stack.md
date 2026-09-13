@@ -6,7 +6,7 @@ Technology decisions for the AI-powered ticket management system. See `project-s
 
 | Layer      | Choice                                         |
 | ---------- | ---------------------------------------------- |
-| Frontend   | React + TypeScript on Vite, React Router, Tailwind CSS |
+| Frontend   | React + TypeScript on Vite, React Router, shadcn/ui + Tailwind CSS |
 | Backend    | Node.js + Express + TypeScript                 |
 | Database   | PostgreSQL                                     |
 | ORM        | Prisma                                         |
@@ -21,14 +21,20 @@ Technology decisions for the AI-powered ticket management system. See `project-s
 - **React Router v7** for routing, with protected routes gated on the current
   session. `ProtectedRoute` reads the auth context and redirects anonymous
   visitors to `/login`.
-- **Tailwind CSS v4** for styling, via the first-party `@tailwindcss/vite`
-  plugin. `client/src/index.css` is just `@import 'tailwindcss'`; there is no
-  `tailwind.config` and no hand-written stylesheet. Utility classes live on the
-  elements, with `dark:` variants (which follow `prefers-color-scheme`) next to
-  their light counterparts. Page-wide defaults - background, text colour, the
-  full-height column layout - sit on `<body>` and `#root` in `index.html`.
-  This replaced the Vite starter's custom-property stylesheet once the shell,
-  login page and form controls were all restyling the same handful of tokens.
+- **shadcn/ui on Tailwind CSS v4** for styling. Tailwind runs through the
+  first-party `@tailwindcss/vite` plugin with no `tailwind.config`. shadcn was
+  initialised with its defaults - the `radix-nova` style (Radix primitives,
+  Lucide icons, Geist font), `neutral` base colour, CSS variables for theming -
+  recorded in `client/components.json`. `client/src/index.css` is the
+  generated theme: the `@theme inline` token map, the light `:root` and `.dark`
+  palettes, and a small base layer. Components are copied into
+  `client/src/components/ui/` by the CLI and owned by the repo, so they can be
+  edited. Layout and spacing use Tailwind utilities directly; colours go
+  through the theme tokens so dark mode needs no per-element `dark:` variants.
+  Dark mode is the `.dark` class, set on `<html>` by an inline script in
+  `index.html` from `prefers-color-scheme`. This replaced the Vite starter's
+  custom-property stylesheet once the shell, login page and form controls were
+  all restyling the same handful of tokens.
 - Key routes: `/login`, `/` (home), `/tickets` (list, filter, sort),
   `/tickets/:id` (detail), `/admin/users` (admin only).
 - The **Better Auth browser client** (`client/src/lib/auth-client.ts`) handles

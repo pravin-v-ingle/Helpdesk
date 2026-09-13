@@ -1,12 +1,20 @@
 <!doctype html>
-<html lang="en" class="scheme-light-dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Helpdesk</title>
+    <!-- shadcn's dark theme is the `.dark` class. Follow the OS preference,
+         and set it before first paint so there is no light flash. -->
+    <script>
+      const dark = matchMedia('(prefers-color-scheme: dark)')
+      const apply = () => document.documentElement.classList.toggle('dark', dark.matches)
+      apply()
+      dark.addEventListener('change', apply)
+    </script>
   </head>
-  <body class="bg-white text-gray-600 antialiased dark:bg-gray-950 dark:text-gray-400">
+  <body class="scheme-light dark:scheme-dark">
     <div id="root" class="flex min-h-svh flex-col"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

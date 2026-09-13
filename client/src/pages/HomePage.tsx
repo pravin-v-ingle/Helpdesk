@@ -12,10 +12,8 @@ export function HomePage() {
 
   return (
     <main className="flex-1 px-6 py-8">
-      <h1 className="mb-3 text-3xl font-medium tracking-tight text-gray-950 dark:text-gray-100">
-        Welcome, {user.name}
-      </h1>
-      <p className="text-[15px]">
+      <h1 className="mb-2 text-2xl font-semibold tracking-tight">Welcome, {user.name}</h1>
+      <p className="text-sm text-muted-foreground">
         You are signed in as {user.email} with the{' '}
         {user.role === 'ADMIN' ? 'admin' : 'agent'} role.
       </p>
