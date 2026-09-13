@@ -155,15 +155,25 @@ request stream itself. Its endpoints bypass our error middleware and return
 Better Auth's own `{ data, error }` shape; everything else returns `{ error }`.
 
 Environment (`server/src/env.ts`): `BETTER_AUTH_SECRET` is required.
-`BETTER_AUTH_URL` defaults to `http://localhost:<PORT>`. `TRUSTED_ORIGINS` is a
-comma-separated list of extra origins Better Auth accepts; it defaults to the
-Vite dev server outside production and to nothing in production, where it must
-be set explicitly.
+`BETTER_AUTH_URL` defaults to `http://localhost:<PORT>` outside production; in
+production it is required and must be `https://`, because Better Auth derives
+the cookie's `Secure` flag from it. `TRUSTED_ORIGINS` is a comma-separated
+list of extra origins Better Auth accepts; it defaults to the Vite dev server
+outside production and is required in production. `TRUSTED_PROXIES` lists the
+reverse proxies whose `X-Forwarded-For` Express believes (see rate limiting
+below); unset means none.
 
 ### Server pieces
 
 - **`server/src/lib/auth.ts`** - the `betterAuth()` instance. Do not add
   `cookieCache` or `secondaryStorage` (see above).
+- **Rate limiting** is Better Auth's, on in production only, 3 sign-in
+  attempts per 10 s per client IP. Better Auth only sees headers, so it cannot
+  tell a real proxy header from a forged one; instead `app.ts` sets Express's
+  `trust proxy` from `TRUSTED_PROXIES`, then copies `req.ip` into the
+  `x-client-ip` header (`CLIENT_IP_HEADER` in `lib/auth.ts`) on every
+  `/api/auth` request, overwriting whatever arrived, and Better Auth reads
+  only that header. Do not add `X-Forwarded-For` to `ipAddressHeaders`.
 - **`requireAuth`** (`middleware/require-auth.ts`) - 401 when there is no
   session or the user is deactivated; otherwise sets `req.user` and
   `req.session` (typed in `src/types/express.d.ts`).
@@ -177,8 +187,11 @@ be set explicitly.
   get, create, `PATCH` (name, role, `active: true` to reactivate), `DELETE`
   (deactivates - nothing is ever hard-deleted). Guards in the service: a user
   cannot change their own role or deactivate themselves, and the last active
-  admin cannot be demoted or deactivated. Deactivation sets `active: false` and
-  deletes the user's sessions in one transaction.
+  admin cannot be demoted or deactivated. The last-admin check and the write
+  it guards run in one serializable transaction (`serializable()` in the
+  service), retried on conflict, so two admins removing each other at once
+  cannot both succeed. Deactivation sets `active: false` and deletes the
+  user's sessions in the same transaction.
 - **`role` and `active` are server-owned.** Declared to Better Auth as
   additional fields with `input: false`, so no request body can set them; the
   users service writes them through Prisma. A `session.create.before` hook

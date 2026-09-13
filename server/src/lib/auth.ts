@@ -2,7 +2,13 @@ import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { APIError } from "better-auth/api";
 import { prisma } from "./prisma.ts";
-import { env } from "../env.ts";
+import { env, isProduction } from "../env.ts";
+
+/**
+ * The header app.ts writes the client IP into before Better Auth runs. Better
+ * Auth reads only this header, so a forged `X-Forwarded-For` has no effect.
+ */
+export const CLIENT_IP_HEADER = "x-client-ip";
 
 /**
  * Better Auth instance. Email and password only, with sessions stored in
@@ -87,4 +93,27 @@ export const auth = betterAuth({
   // In development the client proxies /api, so this only matters for requests
   // made straight to the API from the browser.
   trustedOrigins: env.trustedOrigins,
+
+  // Per-IP request limits, counted in memory - fine for one process; a second
+  // instance would need `storage: "database"`. The sign-in rule is the one
+  // that matters: it is what stands between a stolen email address and a
+  // guessed password. Off outside production so local testing is not throttled.
+  rateLimit: {
+    enabled: isProduction,
+    window: 10,
+    max: 100,
+    customRules: {
+      "/sign-in/email": { window: 10, max: 3 },
+    },
+  },
+
+  advanced: {
+    // See CLIENT_IP_HEADER. Without this Better Auth would read X-Forwarded-For
+    // straight from the request and let a client pick its own rate-limit
+    // bucket, or with no header at all put every client in one shared bucket.
+    ipAddress: { ipAddressHeaders: [CLIENT_IP_HEADER] },
+    // env.ts already refuses a non-https BETTER_AUTH_URL in production; this
+    // makes the cookie flag independent of that check.
+    useSecureCookies: isProduction,
+  },
 });

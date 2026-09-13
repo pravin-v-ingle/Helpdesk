@@ -1,4 +1,4 @@
-import type { Role } from "../generated/prisma/client.ts";
+import { Prisma, type Role } from "../generated/prisma/client.ts";
 import { prisma } from "../lib/prisma.ts";
 import { createUserWithPassword } from "../lib/auth-accounts.ts";
 import { HttpError } from "../middleware/error-handler.ts";
@@ -24,8 +24,8 @@ export function listUsers() {
   });
 }
 
-export async function getUser(id: string) {
-  const user = await prisma.user.findUnique({
+export async function getUser(id: string, db: Prisma.TransactionClient = prisma) {
+  const user = await db.user.findUnique({
     where: { id },
     select: publicUserSelect,
   });
@@ -75,24 +75,26 @@ export async function updateUser(
   input: { name?: string; role?: Role },
   actingUserId: string,
 ) {
-  const user = await getUser(id);
+  return serializable(async (tx) => {
+    const user = await getUser(id, tx);
 
-  // An admin demoting themselves would lose access to this page mid-request.
-  if (input.role && input.role !== user.role && id === actingUserId) {
-    throw new HttpError(400, "You cannot change your own role");
-  }
+    // An admin demoting themselves would lose access to this page mid-request.
+    if (input.role && input.role !== user.role && id === actingUserId) {
+      throw new HttpError(400, "You cannot change your own role");
+    }
 
-  if (input.role && input.role !== "ADMIN" && user.role === "ADMIN") {
-    await assertNotLastActiveAdmin(id);
-  }
+    if (input.role && input.role !== "ADMIN" && user.role === "ADMIN") {
+      await assertNotLastActiveAdmin(tx, id);
+    }
 
-  return prisma.user.update({
-    where: { id },
-    data: {
-      ...(input.name !== undefined && { name: input.name.trim() }),
-      ...(input.role !== undefined && { role: input.role }),
-    },
-    select: publicUserSelect,
+    return tx.user.update({
+      where: { id },
+      data: {
+        ...(input.name !== undefined && { name: input.name.trim() }),
+        ...(input.role !== undefined && { role: input.role }),
+      },
+      select: publicUserSelect,
+    });
   });
 }
 
@@ -102,24 +104,24 @@ export async function updateUser(
  * The row is kept: tickets they touched still need to name them.
  */
 export async function deactivateUser(id: string, actingUserId: string) {
-  const user = await getUser(id);
+  return serializable(async (tx) => {
+    const user = await getUser(id, tx);
 
-  if (id === actingUserId) {
-    throw new HttpError(400, "You cannot deactivate your own account");
-  }
-  if (!user.active) return user;
-  if (user.role === "ADMIN") await assertNotLastActiveAdmin(id);
+    if (id === actingUserId) {
+      throw new HttpError(400, "You cannot deactivate your own account");
+    }
+    if (!user.active) return user;
+    if (user.role === "ADMIN") await assertNotLastActiveAdmin(tx, id);
 
-  const [updated] = await prisma.$transaction([
-    prisma.user.update({
+    const updated = await tx.user.update({
       where: { id },
       data: { active: false },
       select: publicUserSelect,
-    }),
-    prisma.session.deleteMany({ where: { userId: id } }),
-  ]);
+    });
+    await tx.session.deleteMany({ where: { userId: id } });
 
-  return updated;
+    return updated;
+  });
 }
 
 export async function reactivateUser(id: string) {
@@ -132,13 +134,53 @@ export async function reactivateUser(id: string) {
   });
 }
 
-/** Stops the system being left with no one who can manage users. */
-async function assertNotLastActiveAdmin(id: string) {
-  const otherActiveAdmins = await prisma.user.count({
+/**
+ * Stops the system being left with no one who can manage users. Only sound
+ * inside a serializable transaction with the write that follows it: as a
+ * plain read, two admins removing each other at the same moment would both
+ * count the other and both succeed.
+ */
+async function assertNotLastActiveAdmin(tx: Prisma.TransactionClient, id: string) {
+  const otherActiveAdmins = await tx.user.count({
     where: { role: "ADMIN", active: true, id: { not: id } },
   });
 
   if (otherActiveAdmins === 0) {
     throw new HttpError(400, "The last active admin cannot be removed");
+  }
+}
+
+/**
+ * Postgres refused to commit because a concurrent transaction got there first
+ * (SQLSTATE 40001). Prisma reports it two ways: as `P2034` on the classic
+ * path, and through the driver adapter as a `DriverAdapterError` whose cause
+ * is `TransactionWriteConflict` - the form `@prisma/adapter-pg` produces
+ * almost every time.
+ */
+function isSerializationFailure(err: unknown): boolean {
+  if (err instanceof Prisma.PrismaClientKnownRequestError) return err.code === "P2034";
+  if (err instanceof Error && err.name === "DriverAdapterError") {
+    const cause = err.cause as { kind?: string } | undefined;
+    return cause?.kind === "TransactionWriteConflict";
+  }
+  return false;
+}
+
+const SERIALIZABLE_ATTEMPTS = 3;
+
+/**
+ * Runs `fn` in a serializable transaction, so a check it makes (an admin
+ * count, say) still holds when its write commits. Postgres aborts one side
+ * of a conflict rather than letting both through; that side is retried.
+ */
+async function serializable<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await prisma.$transaction(fn, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+    } catch (err) {
+      if (!isSerializationFailure(err) || attempt >= SERIALIZABLE_ATTEMPTS) throw err;
+    }
   }
 }
