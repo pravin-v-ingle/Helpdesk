@@ -1,6 +1,8 @@
 import { useState } from 'react'
+import { NavLink } from 'react-router'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import { useAuth } from '../auth/auth-context.ts'
 
 export function NavBar() {
@@ -21,7 +23,24 @@ export function NavBar() {
 
   return (
     <header className="flex items-center justify-between gap-4 border-b px-6 py-3">
-      <span className="text-lg font-semibold tracking-tight">Helpdesk</span>
+      <nav className="flex items-center gap-4">
+        <NavLink to="/" className="text-lg font-semibold tracking-tight">
+          Helpdesk
+        </NavLink>
+        {user?.role === 'ADMIN' && (
+          <NavLink
+            to="/users"
+            className={({ isActive }) =>
+              cn(
+                'text-sm transition-colors hover:text-foreground',
+                isActive ? 'font-medium text-foreground' : 'text-muted-foreground',
+              )
+            }
+          >
+            Users
+          </NavLink>
+        )}
+      </nav>
 
       {user && (
         <div className="flex items-center gap-3">

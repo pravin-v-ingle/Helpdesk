@@ -237,6 +237,14 @@ be set explicitly.
 - **Routing.** `/login` is public; every other route nests under
   `ProtectedRoute` then `AppLayout`, so new pages get the session gate and the
   nav bar by being placed in that branch of `App.tsx`.
+- **`RequireRole`** (`client/src/auth/RequireRole.tsx`) gates routes on the
+  user's role. It nests inside `ProtectedRoute` and sends the wrong role to
+  `/`, not `/login` - the session is valid, the page just is not theirs.
+  `/users` sits under `<RequireRole role="ADMIN" />`; put further admin-only
+  routes in the same branch. This is a UX gate only; the server's
+  `requireRole("ADMIN")` on `/api/users` is the security boundary.
+- **Admin-only nav links** render on `user.role === 'ADMIN'` in `NavBar.tsx`,
+  which reads the user from `useAuth()`. The "Users" link is the example.
 
 ### Not built
 
@@ -247,7 +255,7 @@ password" endpoint, and a job that deletes expired `Session` rows.
 ## State
 
 Phase 1 is done. Phase 2 is done on the server, and all of it is done on the
-client except the admin user page.
+client except the body of the admin user page.
 
 Working on the server: Postgres and Prisma with migrations, Better Auth over
 database-backed sessions, `requireAuth()` and `requireRole()`, `GET /api/me`,
@@ -256,12 +264,14 @@ admin.
 
 Working on the client: the login page at `/login`, an auth context that restores
 the session from `GET /api/me` on load, a `ProtectedRoute` wrapper, a nav bar
-showing the signed-in user with a sign-out button, and a redirect to `/login` on
-any 401. Routing is React Router v7 in declarative mode. The login page is
+showing the signed-in user with a sign-out button and, for admins, a link to
+`/users`, a `RequireRole` wrapper, and a redirect to `/login` on any 401.
+Routing is React Router v7 in declarative mode. The login page is
 the reference for how a form should be built: `Card` around `Field` /
 `FieldLabel` / `Input` / `FieldError`, react-hook-form with a Zod resolver,
 and the form-level error in `errors.root`.
 
-Not built yet: the admin user management page (task 2.13), and every later
-phase - no tickets, no AI, no email. The home page at `/` is a placeholder that
+Not built yet: the admin user management page (task 2.13) - `/users` exists,
+admin-gated, but shows only a heading; the list, create form and
+edit/deactivate actions are still to do - and every later phase - no tickets, no AI, no email. The home page at `/` is a placeholder that
 the phase 7 dashboard replaces.
