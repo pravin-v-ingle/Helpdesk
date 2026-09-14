@@ -57,7 +57,6 @@ Run from the repository root:
 | `bun run build` | Build both workspaces |
 | `bun run typecheck` | Typecheck all workspaces |
 | `bun run test:e2e` | Run the Playwright end-to-end tests (see Testing) |
-| `NODE_ENV=test bun run db:test:reset` | From `server/`: recreate and seed the e2e database by hand |
 
 Run `bun run typecheck` before considering a change complete.
 
@@ -295,41 +294,35 @@ what we think. Check before relying on `TRUSTED_ORIGINS` as a CSRF defence.
 
 ## Testing
 
-End-to-end tests run with Playwright from the `e2e/` workspace against the real
-client and API. `tech-stack.md` has the reasoning. There are no specs yet;
-put them in `e2e/tests/` as `*.spec.ts`.
+Playwright end-to-end tests live in the `e2e/` workspace and run with
+`bun run test:e2e` against the real client and API on their own ports (3001,
+5174) and a separate `helpdesk_test` database that is reset before every run.
+`tech-stack.md` has the reasoning. There are no specs yet.
 
-- **Run with `bun run test:e2e`** from the root (`bun run --cwd e2e test:ui`
-  for the Playwright UI, `test:headed` to watch the browser). One-time setup:
-  `npx playwright install chromium` from `e2e/` - npx, not bunx, which hangs
-  on this machine.
-- **The stack under test has its own ports**: API `3001`, client `5174`.
-  Playwright's `webServer` starts both (`bun run start:test` in `server/`,
-  `bun run dev:test` in `client/`) and stops them after the run, so the dev
-  servers on 3000/5173 can stay up. `vite.config.ts` reads `CLIENT_PORT` and
-  `API_PORT` for this; the defaults are the dev ports.
-- **A separate database, chosen by environment only.** With `NODE_ENV=test`
-  Bun loads `server/.env.test` (committed: test ports, a throwaway
-  `BETTER_AUTH_SECRET`, `TRUSTED_ORIGINS=http://localhost:5174`, the test
-  admin) and then `server/.env.test.local` (gitignored) on top. Put the real
-  `DATABASE_URL` for `helpdesk_test` in `.env.test.local`; nothing else
-  changes. `.env.local` is not loaded under test. `env.ts` and
-  `prisma.config.ts` need no test-specific code.
-- **The database is reset before every run.** `start:test` runs
-  `scripts/reset-test-db.ts` first: it creates the database if missing,
-  `prisma migrate reset --force`, then the normal seed, so
-  `admin@test.local` / `test-admin-password` (from `.env.test`) always exists.
-  The API's `webServer` entry has `reuseExistingServer: false` for this
-  reason - a fresh process is what guarantees the reset ran.
-- **The `_test` guard.** The reset script exits 1 unless `NODE_ENV` is `test`
-  and the database name in `DATABASE_URL` ends in `_test`. Keep it; it is the
-  only thing standing between a mistyped env and the development database.
-- **Prisma blocks `migrate reset` when it detects an AI agent** (Claude Code
-  included) and asks for the user's consent in
-  `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION`. Running `bun run test:e2e`
-  from a plain terminal is unaffected.
-- **Tests are not parallel** (`fullyParallel: false`) because they share one
-  seeded database. Revisit when there are enough specs to care.
+**Delegate all e2e test work to the `e2e-test-writer` agent**
+(`.claude/agents/e2e-test-writer.md`). It holds the full description of the
+stack, the spec conventions, and the Prisma consent step that a database
+reset from Claude Code requires. Do not write specs, start the test servers,
+or run `prisma migrate reset` from the main session.
+
+- **When to delegate**: the user asks for tests; a page or endpoint has just
+  been finished and the user wants it covered; an e2e run fails and needs
+  diagnosing; the UI or API changes in a way that existing specs depend on
+  (a label, route, status code or error message).
+- **What to tell it**: the feature or page to cover, its route(s) and the
+  components involved, the behaviour expected - including the server-side
+  guards the UI should surface (see Authentication: self-demotion,
+  self-deactivation, last-admin) - and whether it should run the suite or
+  only write specs. Point it at anything non-obvious the agent cannot read
+  from the code, such as a decision the user made in conversation.
+- **What it must not do**: change application code to make a test pass,
+  set `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION` without the user saying
+  yes, or point `DATABASE_URL` at anything but a `_test` database. If it
+  reports an application bug behind a failing test, relay that to the user as
+  a finding and fix it in the main session only when asked.
+- **What to do with the result**: relay which specs were added and the exact
+  run outcome. Then run `bun run typecheck` - `e2e/` is a workspace and its
+  specs are typechecked with everything else.
 
 ## State
 
