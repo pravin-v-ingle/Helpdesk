@@ -13,12 +13,14 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    // Overridable so the e2e stack can run beside the dev servers
+    // (`dev:test` sets 5174 / 3001). Defaults are the dev ports.
+    port: Number(process.env.CLIENT_PORT ?? 5173),
     // Dev only. In production the client is served alongside the API,
     // or points at the real API URL.
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',
+        target: `http://localhost:${process.env.API_PORT ?? 3000}`,
         changeOrigin: true,
       },
     },

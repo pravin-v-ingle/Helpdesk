@@ -178,6 +178,26 @@ Inbound email processing cannot happen inside the webhook request - AI calls tak
 - `GET /health` endpoint for container health checks.
 - Secrets from the provider's secret manager, never baked into images.
 
+## Testing
+
+**Playwright** for end-to-end tests, in its own `e2e/` workspace, Chromium only.
+
+- Tests drive the real client and API through a browser, so the whole stack is
+  exercised as a user sees it - React Router, the Vite proxy, Better Auth's
+  `httpOnly` session cookie, `requireAuth` on the server. Nothing is mocked,
+  and nothing is reimplemented in the tests to make the cookie work.
+- Playwright's `webServer` starts the API and the client itself and shuts them
+  down afterwards, on ports 3001 and 5174 so the development servers on 3000
+  and 5173 can stay up.
+- The API runs against a **separate `helpdesk_test` database**, selected purely
+  by environment: Bun loads `server/.env.test` and `server/.env.test.local` when
+  `NODE_ENV=test`, so the same `env.ts` and the same Prisma config point at the
+  test database with no code path for tests. The database is dropped, migrated
+  and seeded before every run, and the reset script refuses any database whose
+  name does not end in `_test`, so development data is never at risk.
+- Unit test runner and CI are still open; Bun's built-in `bun test` is the
+  likely choice for unit tests when a service is worth testing in isolation.
+
 ## Open decisions
 
 - **SendGrid vs Mailgun** - compare inbound parse behaviour, deliverability, and pricing at expected volume.
@@ -186,4 +206,4 @@ Inbound email processing cannot happen inside the webhook request - AI calls tak
 - **Password hashing algorithm** - required by the login flow above.
 - **Job queue library** - required by background processing above.
 - **Validation library** - required at the API boundary.
-- **Testing framework and CI** - not yet chosen.
+- **Unit test runner and CI** - Playwright covers end-to-end (see Testing); a unit test runner and a CI pipeline are not yet chosen.

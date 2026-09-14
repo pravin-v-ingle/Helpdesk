@@ -41,6 +41,8 @@ has no build or transpile step.
 - Auth: Better Auth, email and password, database-backed sessions
 - AI: Claude API via `@anthropic-ai/sdk`, default model `claude-opus-5` (not yet added)
 - Email: SendGrid or Mailgun, inbound webhook plus outbound send (not yet added)
+- Testing: Playwright end-to-end in `e2e/`, Chromium only, against a separate
+  `helpdesk_test` database (see Testing); unit test runner not yet chosen
 
 ## Commands
 
@@ -53,7 +55,9 @@ Run from the repository root:
 | `bun run dev:server` | API only, port 3000 |
 | `bun run dev:client` | Client only, port 5173 |
 | `bun run build` | Build both workspaces |
-| `bun run typecheck` | Typecheck both workspaces |
+| `bun run typecheck` | Typecheck all workspaces |
+| `bun run test:e2e` | Run the Playwright end-to-end tests (see Testing) |
+| `NODE_ENV=test bun run db:test:reset` | From `server/`: recreate and seed the e2e database by hand |
 
 Run `bun run typecheck` before considering a change complete.
 
@@ -82,6 +86,11 @@ server/          Express API
     app.ts       app assembly
     index.ts     entry point
     env.ts       environment configuration
+  scripts/       reset-test-db.ts - resets the e2e database
+  .env.test      committed settings for the e2e API (test ports, test admin)
+e2e/             Playwright end-to-end tests
+  playwright.config.ts  starts API and client, Chromium only
+  tests/         specs go here (empty so far)
 ```
 
 ## Conventions
@@ -96,7 +105,14 @@ server/          Express API
 - **Throw `HttpError`** (`server/src/middleware/error-handler.ts`) when a service
   needs to control the status code. Anything else becomes a 500.
 - **Configuration comes from `env.ts`**, validated at startup. Never read
-  `process.env` directly elsewhere.
+  `process.env` directly elsewhere. Bun loads `server/.env` itself, plus
+  `.env.<NODE_ENV>` and `.env.<NODE_ENV>.local` on top - that is how the e2e
+  stack swaps in its database without any code path for tests.
+- **Prisma 7 CLI differences.** `prisma migrate dev` and `db push` no longer
+  run `prisma generate` - run `bun run db:generate` after a schema change.
+  `--skip-seed` and `--skip-generate` were removed. `prisma migrate reset
+  --force` refuses to run when it detects an AI agent until the user has
+  consented (`PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION`).
 - **The client calls relative `/api` paths.** Vite proxies them in development,
   which is why no CORS configuration is needed. Do not hardcode
   `http://localhost:3000` in client code.
@@ -167,8 +183,12 @@ below); unset means none.
 
 - **`server/src/lib/auth.ts`** - the `betterAuth()` instance. Do not add
   `cookieCache` or `secondaryStorage` (see above).
-- **Rate limiting** is Better Auth's, on in production only, 3 sign-in
-  attempts per 10 s per client IP. Better Auth only sees headers, so it cannot
+- **Rate limiting** is Better Auth's, on in production only: `rateLimit.enabled:
+  isProduction` in `lib/auth.ts`, where `isProduction` (`env.ts`) is
+  `NODE_ENV === "production"`. Production allows 100 requests per 10 s overall
+  and 3 sign-in attempts per 10 s per client IP; `development` and `test` are
+  never throttled, so local work and the e2e suite can sign in repeatedly.
+  Better Auth only sees headers, so it cannot
   tell a real proxy header from a forged one; instead `app.ts` sets Express's
   `trust proxy` from `TRUSTED_PROXIES`, then copies `req.ip` into the
   `x-client-ip` header (`CLIENT_IP_HEADER` in `lib/auth.ts`) on every
@@ -263,7 +283,53 @@ below); unset means none.
 
 Password reset, email verification (the `Verification` table is unused),
 forcing a password change on first sign-in, an admin "reset an agent's
-password" endpoint, and a job that deletes expired `Session` rows.
+password" endpoint, a job that deletes expired `Session` rows, and any rate
+limit on our own routes (`/api/me`, `/api/users`) - only Better Auth's
+endpoints are limited.
+
+Known gap, not yet investigated: a `POST /api/auth/sign-in/email` sent with an
+`Origin` that is not in `TRUSTED_ORIGINS` (`http://evil.example`, observed
+against the test API on 2026-09-14) still returned 200. Either Better Auth's
+origin check does not apply to that request shape or the configuration is not
+what we think. Check before relying on `TRUSTED_ORIGINS` as a CSRF defence.
+
+## Testing
+
+End-to-end tests run with Playwright from the `e2e/` workspace against the real
+client and API. `tech-stack.md` has the reasoning. There are no specs yet;
+put them in `e2e/tests/` as `*.spec.ts`.
+
+- **Run with `bun run test:e2e`** from the root (`bun run --cwd e2e test:ui`
+  for the Playwright UI, `test:headed` to watch the browser). One-time setup:
+  `npx playwright install chromium` from `e2e/` - npx, not bunx, which hangs
+  on this machine.
+- **The stack under test has its own ports**: API `3001`, client `5174`.
+  Playwright's `webServer` starts both (`bun run start:test` in `server/`,
+  `bun run dev:test` in `client/`) and stops them after the run, so the dev
+  servers on 3000/5173 can stay up. `vite.config.ts` reads `CLIENT_PORT` and
+  `API_PORT` for this; the defaults are the dev ports.
+- **A separate database, chosen by environment only.** With `NODE_ENV=test`
+  Bun loads `server/.env.test` (committed: test ports, a throwaway
+  `BETTER_AUTH_SECRET`, `TRUSTED_ORIGINS=http://localhost:5174`, the test
+  admin) and then `server/.env.test.local` (gitignored) on top. Put the real
+  `DATABASE_URL` for `helpdesk_test` in `.env.test.local`; nothing else
+  changes. `.env.local` is not loaded under test. `env.ts` and
+  `prisma.config.ts` need no test-specific code.
+- **The database is reset before every run.** `start:test` runs
+  `scripts/reset-test-db.ts` first: it creates the database if missing,
+  `prisma migrate reset --force`, then the normal seed, so
+  `admin@test.local` / `test-admin-password` (from `.env.test`) always exists.
+  The API's `webServer` entry has `reuseExistingServer: false` for this
+  reason - a fresh process is what guarantees the reset ran.
+- **The `_test` guard.** The reset script exits 1 unless `NODE_ENV` is `test`
+  and the database name in `DATABASE_URL` ends in `_test`. Keep it; it is the
+  only thing standing between a mistyped env and the development database.
+- **Prisma blocks `migrate reset` when it detects an AI agent** (Claude Code
+  included) and asks for the user's consent in
+  `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION`. Running `bun run test:e2e`
+  from a plain terminal is unaffected.
+- **Tests are not parallel** (`fullyParallel: false`) because they share one
+  seeded database. Revisit when there are enough specs to care.
 
 ## State
 
@@ -283,6 +349,9 @@ Routing is React Router v7 in declarative mode. The login page is
 the reference for how a form should be built: `Card` around `Field` /
 `FieldLabel` / `Input` / `FieldError`, react-hook-form with a Zod resolver,
 and the form-level error in `errors.root`.
+
+Testing: Playwright is set up in `e2e/` with its own database and ports (see
+Testing above), but no specs have been written.
 
 Not built yet: the admin user management page (task 2.13) - `/users` exists,
 admin-gated, but shows only a heading; the list, create form and

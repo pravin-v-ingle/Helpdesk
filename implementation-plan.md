@@ -50,6 +50,7 @@ configuring it rather than by writing the code. The endpoint names are its own:
 - [x] 2.12 Build the auth context and protected route wrapper.
 - [ ] 2.13 Build the admin user management page.
 - [x] 2.14 Redirect to login on a 401 anywhere in the client.
+- [x] 2.15 Scaffold Playwright end-to-end testing in an `e2e/` workspace against a separate `helpdesk_test` database, reset and seeded on every run. No specs yet.
 
 **Done when**: the seeded admin can log in, create an agent, and that agent can log in. Agents cannot reach admin pages.
 
