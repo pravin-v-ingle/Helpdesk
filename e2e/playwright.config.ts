@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { ADMIN_STORAGE_STATE } from "./tests/helpers/env.ts";
 
 /**
  * End-to-end tests against the real client and API.
@@ -13,6 +14,12 @@ import { defineConfig, devices } from "@playwright/test";
  * listening, so every run starts from a clean schema with the test admin in
  * place. That reset has to live in the server command rather than in
  * `globalSetup`, because Playwright starts `webServer` first.
+ *
+ * Projects: `setup` signs the seeded admin in once and saves the browser
+ * storage state; `chromium` depends on it and starts every test with that
+ * state, so most specs begin already signed in as the admin. Specs that need
+ * an anonymous browser (login, redirects) opt out with
+ * `test.use({ storageState: ANONYMOUS_STORAGE_STATE })`.
  */
 
 const API_PORT = 3001;
@@ -32,7 +39,14 @@ export default defineConfig({
     trace: "on-first-retry",
   },
 
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    { name: "setup", testMatch: /.*\.setup\.ts/ },
+    {
+      name: "chromium",
+      use: { ...devices["Desktop Chrome"], storageState: ADMIN_STORAGE_STATE },
+      dependencies: ["setup"],
+    },
+  ],
 
   webServer: [
     {
