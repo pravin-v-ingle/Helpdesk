@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   Select,
   SelectContent,
@@ -80,7 +81,7 @@ export function UsersPage() {
   const filters = useMemo(() => readFilters(searchParams), [searchParams])
 
   // `keepPreviousData` shows the previous page's rows while the next page
-  // loads, so the table does not collapse to "Loading…" on every change. A
+  // loads, so the table does not collapse to a skeleton on every change. A
   // superseded request is cancelled through the query's `signal`.
   const query = useQuery({ ...userListQueryOptions(filters), placeholderData: keepPreviousData })
   const fetching = query.isFetching
@@ -92,7 +93,7 @@ export function UsersPage() {
 
   // The last successful response. A failed request leaves `query.data`
   // undefined, and the table it replaced should stay on screen under the error
-  // rather than flash back to "Loading…". Adjusted during render, the pattern
+  // rather than flash back to the skeleton. Adjusted during render, the pattern
   // React documents for state derived from a changed prop.
   const [data, setData] = useState(query.data)
   if (query.data && query.data !== data) setData(query.data)
@@ -215,7 +216,7 @@ export function UsersPage() {
       )}
 
       {!data ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
+        <UsersTableSkeleton />
       ) : (
         <>
           <UsersTable
@@ -230,6 +231,55 @@ export function UsersPage() {
         </>
       )}
     </main>
+  )
+}
+
+const TABLE_COLUMNS = ['Name', 'Email', 'Role', 'Status', 'Created'] as const
+const SKELETON_ROWS = 5
+
+/**
+ * The table's shape before the first response: real headers, placeholder
+ * cells sized like the content they stand in for. Hidden from assistive
+ * technology - the status text beside it says what is happening - and not
+ * named "Users", so nothing mistakes it for the table it precedes.
+ */
+function UsersTableSkeleton() {
+  return (
+    <div aria-busy="true" className="rounded-md border">
+      <p role="status" className="sr-only">
+        Loading users…
+      </p>
+      <Table aria-hidden="true">
+        <TableHeader>
+          <TableRow>
+            {TABLE_COLUMNS.map((column) => (
+              <TableHead key={column}>{column}</TableHead>
+            ))}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {Array.from({ length: SKELETON_ROWS }, (_, i) => (
+            <TableRow key={i}>
+              <TableCell>
+                <Skeleton className="h-4 w-28" />
+              </TableCell>
+              <TableCell>
+                <Skeleton className="h-4 w-44" />
+              </TableCell>
+              <TableCell>
+                <Skeleton className="h-5 w-14 rounded-full" />
+              </TableCell>
+              <TableCell>
+                <Skeleton className="h-5 w-16 rounded-full" />
+              </TableCell>
+              <TableCell>
+                <Skeleton className="h-4 w-24" />
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
   )
 }
 
@@ -251,11 +301,9 @@ function UsersTable({
       <Table aria-label="Users">
         <TableHeader>
           <TableRow>
-            <TableHead>Name</TableHead>
-            <TableHead>Email</TableHead>
-            <TableHead>Role</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Created</TableHead>
+            {TABLE_COLUMNS.map((column) => (
+              <TableHead key={column}>{column}</TableHead>
+            ))}
           </TableRow>
         </TableHeader>
         <TableBody>

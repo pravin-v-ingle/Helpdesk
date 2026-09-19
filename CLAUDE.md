@@ -135,7 +135,8 @@ e2e/             Playwright end-to-end tests
 Styling is shadcn/ui on Tailwind CSS v4; `tech-stack.md` has the reasoning.
 
 - **Build pages from the components in `client/src/components/ui/`** - `Button`,
-  `Input`, `Label`, `Card`, `Badge`, `Field`, `Table`, `Select` so far. Import them through the
+  `Input`, `Label`, `Card`, `Badge`, `Field`, `Table`, `Select`, `Skeleton`
+  so far. Import them through the
   `@/` alias (`@/components/ui/button`), which `client/tsconfig*.json` `paths`
   and `vite.config.ts` both define. Layout and spacing use Tailwind utilities
   directly on elements.
@@ -153,6 +154,16 @@ Styling is shadcn/ui on Tailwind CSS v4; `tech-stack.md` has the reasoning.
 - **Dark mode is the `.dark` class on `<html>`.** An inline script in
   `index.html` sets it from `prefers-color-scheme` before first paint. There is
   no in-app toggle yet.
+- **Loading states are `Skeleton` placeholders shaped like the content**, not
+  a "Loading…" message or a spinner. `ProtectedRoute` shows a shell skeleton
+  (nav strip, heading, text lines) while the session is restored;
+  `UsersTableSkeleton` in `UsersPage.tsx` shows the table's headers with
+  placeholder rows before the first response. A skeleton carries a visually
+  hidden `role="status"` text for assistive technology and is not given the
+  real element's accessible name, so a test waiting for the `Users` table
+  cannot match the placeholder. Once data has arrived, refetches keep the old
+  content on screen (`keepPreviousData`, `aria-busy`) rather than returning
+  to the skeleton.
 - **`Card` is a flex column with a gap between its children.** Anything that
   wraps several card sections in one element - a `<form>` around `CardContent`
   and `CardFooter`, say - must carry the same gap
