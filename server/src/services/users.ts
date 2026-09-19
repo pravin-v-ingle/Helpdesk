@@ -12,16 +12,50 @@ const publicUserSelect = {
   active: true,
   createdAt: true,
   updatedAt: true,
-} as const;
+} as const satisfies Prisma.UserSelect;
 
-export type PublicUser = Awaited<ReturnType<typeof listUsers>>[number];
+export type PublicUser = Prisma.UserGetPayload<{ select: typeof publicUserSelect }>;
 
-export function listUsers() {
-  return prisma.user.findMany({
-    select: publicUserSelect,
-    // Active accounts first, then newest. The admin page reads top-down.
-    orderBy: [{ active: "desc" }, { createdAt: "desc" }],
-  });
+export type ListUsersOptions = {
+  /** Trimmed, non-empty. Case-insensitive substring of name or email. */
+  q?: string;
+  role?: Role;
+  active?: boolean;
+  /** 1-based. */
+  page: number;
+  pageSize: number;
+};
+
+/**
+ * One page of users plus the total matching the same filters. A page past the
+ * end returns no users with the real total; the caller decides where to go.
+ */
+export async function listUsers(options: ListUsersOptions) {
+  const where: Prisma.UserWhereInput = {
+    ...(options.role !== undefined && { role: options.role }),
+    ...(options.active !== undefined && { active: options.active }),
+    ...(options.q !== undefined && {
+      OR: [
+        { name: { contains: options.q, mode: "insensitive" } },
+        { email: { contains: options.q, mode: "insensitive" } },
+      ],
+    }),
+  };
+
+  const [users, total] = await prisma.$transaction([
+    prisma.user.findMany({
+      where,
+      select: publicUserSelect,
+      // Active accounts first, then newest. The admin page reads top-down.
+      // `id` breaks createdAt ties so a row cannot appear on two pages.
+      orderBy: [{ active: "desc" }, { createdAt: "desc" }, { id: "asc" }],
+      skip: (options.page - 1) * options.pageSize,
+      take: options.pageSize,
+    }),
+    prisma.user.count({ where }),
+  ]);
+
+  return { users, total };
 }
 
 export async function getUser(id: string, db: Prisma.TransactionClient = prisma) {

@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { apiFetch, setUnauthorizedHandler } from '../lib/api.ts'
 import type { PublicUser } from '../lib/api.ts'
@@ -25,6 +26,9 @@ async function fetchAuthState(signal?: AbortSignal): Promise<AuthState> {
  */
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<AuthState>({ status: 'loading' })
+  // Cached server data belongs to a session. Cleared on both edges, so the
+  // next person to sign in on this browser never sees the last one's lists.
+  const queryClient = useQueryClient()
 
   useEffect(() => {
     const controller = new AbortController()
@@ -51,14 +55,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { error } = await authClient.signIn.email({ email, password })
     if (error) return error.message ?? 'Could not sign in. Please try again.'
 
+    queryClient.clear()
     setState(await fetchAuthState())
     return undefined
-  }, [])
+  }, [queryClient])
 
   const signOut = useCallback(async () => {
     await authClient.signOut()
     setState({ status: 'anonymous' })
-  }, [])
+    queryClient.clear()
+  }, [queryClient])
 
   const value = useMemo(() => ({ ...state, signIn, signOut }), [state, signIn, signOut])
 

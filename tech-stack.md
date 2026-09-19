@@ -6,7 +6,7 @@ Technology decisions for the AI-powered ticket management system. See `project-s
 
 | Layer      | Choice                                         |
 | ---------- | ---------------------------------------------- |
-| Frontend   | React + TypeScript on Vite, React Router, shadcn/ui + Tailwind CSS |
+| Frontend   | React + TypeScript on Vite, React Router, shadcn/ui + Tailwind CSS, Axios, TanStack Query |
 | Backend    | Node.js + Express + TypeScript                 |
 | Database   | PostgreSQL                                     |
 | ORM        | Prisma                                         |
@@ -37,6 +37,19 @@ Technology decisions for the AI-powered ticket management system. See `project-s
   all restyling the same handful of tokens.
 - Key routes: `/login`, `/` (home), `/tickets` (list, filter, sort),
   `/tickets/:id` (detail), `/admin/users` (admin only).
+- **Axios** for HTTP, behind one `apiFetch()` helper in `client/src/lib/api.ts`
+  that turns a non-2xx response into an `ApiError` and fires the 401 handler.
+  Same-origin only, so no `baseURL` and no `withCredentials`; Vite proxies
+  `/api` in development.
+- **TanStack Query** for server data. Pages had started growing their own
+  `useEffect` + `AbortController` + "last good response" state around
+  `apiFetch()` (the users list was the first); the library owns that instead -
+  caching by key, cancelling superseded requests, keeping the previous page's
+  rows while the next loads (`keepPreviousData`), refetching on focus - and it
+  is where the mutations and invalidation for the coming write paths (create
+  user, ticket updates) will live. The auth session is deliberately not a
+  query: `AuthProvider` is a small explicit state machine, and the cache is
+  cleared on sign-in and sign-out so nothing crosses sessions.
 - The **Better Auth browser client** (`client/src/lib/auth-client.ts`) handles
   sign-in and sign-out. The current user comes from `GET /api/me` rather than
   its `useSession()` hook, so the client has one user shape - see the comment on

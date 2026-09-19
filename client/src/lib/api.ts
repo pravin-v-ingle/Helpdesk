@@ -2,6 +2,7 @@
  * The one place that knows how this API talks: relative `/api` paths, session
  * cookies, and the server's single-key `{ error }` failure shape.
  */
+import axios, { type Method } from 'axios'
 
 /**
  * The user shape every endpoint returns, mirroring `publicUserSelect` in
@@ -52,42 +53,53 @@ export function setUnauthorizedHandler(handler: UnauthorizedHandler | undefined)
 }
 
 /**
- * Fetch a JSON endpoint. Throws `ApiError` on a non-2xx response, so callers
- * only deal with the success shape.
+ * No `baseURL`: paths are relative to the page's origin, which Vite proxies to
+ * the API in development. Same origin means the session cookie rides along
+ * without `withCredentials`, which only governs cross-origin requests.
  */
-export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    // Same origin in development too, because Vite proxies /api.
-    credentials: 'same-origin',
-    ...init,
-    headers: {
-      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...init?.headers,
-    },
-  })
+const http = axios.create()
 
-  if (!res.ok) {
-    if (res.status === 401) onUnauthorized?.()
-    throw new ApiError(res.status, await errorMessage(res))
+export type ApiRequestOptions = {
+  method?: Method
+  /** Serialised as JSON; Axios sets the `Content-Type` header itself. */
+  body?: unknown
+  signal?: AbortSignal
+}
+
+/**
+ * Call a JSON endpoint. Throws `ApiError` on a non-2xx response, so callers
+ * only deal with the success shape. A request that never reached the server
+ * (network down, or aborted through `signal`) rejects with Axios's own error,
+ * which is how callers tell the two apart.
+ */
+export async function apiFetch<T>(path: string, options?: ApiRequestOptions): Promise<T> {
+  try {
+    const res = await http.request<T>({
+      url: path,
+      method: options?.method ?? 'GET',
+      data: options?.body,
+      signal: options?.signal,
+    })
+    return res.data
+  } catch (err) {
+    if (!axios.isAxiosError(err) || !err.response) throw err
+
+    const { status, data } = err.response
+    if (status === 401) onUnauthorized?.()
+    throw new ApiError(status, errorMessage(status, data))
   }
-
-  return (await res.json()) as T
 }
 
 /**
  * Every server failure is `{ error: string }` (see
  * `server/src/middleware/error-handler.ts`), but a proxy or a crash can still
- * produce something else, so fall back to the status line.
+ * produce something else - Axios hands non-JSON bodies over as a string - so
+ * fall back to the status line.
  */
-async function errorMessage(res: Response): Promise<string> {
-  try {
-    const body: unknown = await res.json()
-    if (body && typeof body === 'object' && 'error' in body) {
-      const { error } = body as { error: unknown }
-      if (typeof error === 'string') return error
-    }
-  } catch {
-    // Not JSON. Fall through.
+function errorMessage(status: number, body: unknown): string {
+  if (body && typeof body === 'object' && 'error' in body) {
+    const { error } = body as { error: unknown }
+    if (typeof error === 'string') return error
   }
-  return `Request failed with status ${res.status}`
+  return `Request failed with status ${status}`
 }
