@@ -14,6 +14,7 @@ Technology decisions for the AI-powered ticket management system. See `project-s
 | Email      | SendGrid or Mailgun (inbound + outbound)       |
 | Auth       | Database-backed sessions                       |
 | Deployment | Docker containers on a cloud provider          |
+| Testing    | Vitest + React Testing Library (client), Playwright end-to-end |
 
 ## Frontend
 
@@ -208,8 +209,26 @@ Inbound email processing cannot happen inside the webhook request - AI calls tak
   test database with no code path for tests. The database is dropped, migrated
   and seeded before every run, and the reset script refuses any database whose
   name does not end in `_test`, so development data is never at risk.
-- Unit test runner and CI are still open; Bun's built-in `bun test` is the
-  likely choice for unit tests when a service is worth testing in isolation.
+
+**Vitest + React Testing Library** for client component tests, in `client/`.
+
+- Vitest rather than `bun test` for the client because it runs through the
+  Vite pipeline: the same React plugin, `@/` alias and TypeScript handling
+  as the app, with `vitest.config.ts` extending `vite.config.ts` so there is
+  one build configuration, not two. Bun's runner has no equivalent of that
+  and weaker DOM support.
+- jsdom as the environment: Radix primitives need real-enough DOM APIs
+  (`getComputedStyle`, focus management, pointer events); a few gaps
+  (`hasPointerCapture`, `scrollIntoView`, `ResizeObserver`) are stubbed in
+  `client/src/test/setup.ts`.
+- Tests mock only the HTTP boundary (`apiFetch`) and render the page with the
+  real query client, auth context and router, so they cover how a page turns
+  URL state into requests and responses into UI - the logic an e2e test
+  would need many slow runs to pin down - while the e2e suite keeps proving
+  the stack end to end.
+- Server unit tests and CI are still open; `bun test` remains the likely
+  choice for a service worth testing in isolation, since the server has no
+  Vite pipeline to share.
 
 ## Open decisions
 

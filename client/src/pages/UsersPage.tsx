@@ -215,9 +215,7 @@ export function UsersPage() {
         </p>
       )}
 
-      {!data ? (
-        <UsersTableSkeleton />
-      ) : (
+      {data ? (
         <>
           <UsersTable
             users={data.users}
@@ -229,6 +227,10 @@ export function UsersPage() {
             <Pagination data={data} fetching={fetching} onPageChange={(page) => updateFilters({ page: String(page) })} />
           )}
         </>
+      ) : (
+        // Nothing has loaded yet. A skeleton promises content is coming, so it
+        // gives way to the alert alone once the first request has failed.
+        !query.isError && <UsersTableSkeleton />
       )}
     </main>
   )
