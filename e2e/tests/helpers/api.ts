@@ -1,6 +1,18 @@
 import { expect, type APIRequestContext } from "@playwright/test";
 
 /**
+ * Mirrors `enum Role` in `server/prisma/schema.prisma` (and the `Role` const in
+ * `client/src/lib/api.ts`). Declared here because the e2e workspace cannot
+ * import from either; change it whenever the schema's enum changes.
+ */
+export const Role = {
+  ADMIN: "ADMIN",
+  AGENT: "AGENT",
+} as const;
+
+export type Role = (typeof Role)[keyof typeof Role];
+
+/**
  * The user shape `/api/users` and `/api/me` return - mirrors `PublicUser` in
  * `client/src/lib/api.ts`. Declared here rather than imported so the specs do
  * not depend on either workspace.
@@ -9,7 +21,7 @@ export type PublicUser = {
   id: string;
   name: string;
   email: string;
-  role: "ADMIN" | "AGENT";
+  role: Role;
   active: boolean;
   createdAt: string;
   updatedAt: string;
@@ -35,7 +47,7 @@ export function uniqueEmail(prefix: string) {
  */
 export async function createUser(
   request: APIRequestContext,
-  input: { name: string; email: string; password?: string; role?: "ADMIN" | "AGENT" },
+  input: { name: string; email: string; password?: string; role?: Role },
 ): Promise<PublicUser> {
   const res = await request.post("/api/users", {
     data: {

@@ -91,10 +91,10 @@ async function assertPasswordAllowed(password: string) {
   const { minPasswordLength, maxPasswordLength } = ctx.password.config;
 
   if (password.length < minPasswordLength) {
-    throw new HttpError(400, `Password must be at least ${minPasswordLength} characters`);
+    throw new HttpError(400, `Password must be at least ${minPasswordLength} characters.`);
   }
   if (password.length > maxPasswordLength) {
-    throw new HttpError(400, `Password must be at most ${maxPasswordLength} characters`);
+    throw new HttpError(400, `Password must be at most ${maxPasswordLength} characters.`);
   }
 }
 

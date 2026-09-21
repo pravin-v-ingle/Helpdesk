@@ -1,11 +1,9 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Skeleton } from '@/components/ui/skeleton'
 import {
   Select,
   SelectContent,
@@ -13,16 +11,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
+import { CreateUserDialog } from '../components/CreateUserDialog.tsx'
+import { UsersTable, UsersTableSkeleton } from '../components/UsersTable.tsx'
 import { useAuth } from '../auth/auth-context.ts'
-import { ApiError, type PublicUser } from '../lib/api.ts'
+import { ApiError, isRole, Role } from '../lib/api.ts'
 import { userListQueryOptions, type UserListParams, type UserListResponse } from '../lib/users.ts'
 
 // The server's defaults and limits (server/src/routes/users.ts). The URL is
@@ -52,7 +44,7 @@ function readFilters(params: URLSearchParams): Filters {
 
   return {
     q: q ? q : undefined,
-    role: role === 'ADMIN' || role === 'AGENT' ? role : undefined,
+    role: isRole(role) ? role : undefined,
     active: active === 'true' ? true : active === 'false' ? false : undefined,
     page: readPositiveInt(params.get('page')) ?? 1,
     pageSize: Math.min(readPositiveInt(params.get('pageSize')) ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE),
@@ -70,8 +62,9 @@ function totalPagesOf({ total, pageSize }: UserListResponse): number {
 }
 
 /**
- * Admin user management: the list, searchable, filterable and paginated.
- * The create form and edit/deactivate actions are task 2.13b.
+ * Admin user management: the list, searchable, filterable and paginated, and
+ * the create form (`CreateUserDialog`). The page owns the URL state and the
+ * query; `UsersTable` renders the rows. Edit/deactivate actions are task 2.13c.
  */
 export function UsersPage() {
   const auth = useAuth()
@@ -157,7 +150,10 @@ export function UsersPage() {
 
   return (
     <main className="flex-1 px-6 py-8">
-      <h1 className="mb-6 text-2xl font-semibold tracking-tight">Users</h1>
+      <div className="mb-6 flex items-center justify-between gap-4">
+        <h1 className="text-2xl font-semibold tracking-tight">Users</h1>
+        <CreateUserDialog />
+      </div>
 
       <div className="mb-6 flex flex-wrap items-end gap-4">
         <div className="flex flex-col gap-2">
@@ -185,8 +181,8 @@ export function UsersPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All roles</SelectItem>
-              <SelectItem value="ADMIN">Admin</SelectItem>
-              <SelectItem value="AGENT">Agent</SelectItem>
+              <SelectItem value={Role.ADMIN}>Admin</SelectItem>
+              <SelectItem value={Role.AGENT}>Agent</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -233,119 +229,6 @@ export function UsersPage() {
         !query.isError && <UsersTableSkeleton />
       )}
     </main>
-  )
-}
-
-const TABLE_COLUMNS = ['Name', 'Email', 'Role', 'Status', 'Created'] as const
-const SKELETON_ROWS = 5
-
-/**
- * The table's shape before the first response: real headers, placeholder
- * cells sized like the content they stand in for. Hidden from assistive
- * technology - the status text beside it says what is happening - and not
- * named "Users", so nothing mistakes it for the table it precedes.
- */
-function UsersTableSkeleton() {
-  return (
-    <div aria-busy="true" className="rounded-md border">
-      <p role="status" className="sr-only">
-        Loading users…
-      </p>
-      <Table aria-hidden="true">
-        <TableHeader>
-          <TableRow>
-            {TABLE_COLUMNS.map((column) => (
-              <TableHead key={column}>{column}</TableHead>
-            ))}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {Array.from({ length: SKELETON_ROWS }, (_, i) => (
-            <TableRow key={i}>
-              <TableCell>
-                <Skeleton className="h-4 w-28" />
-              </TableCell>
-              <TableCell>
-                <Skeleton className="h-4 w-44" />
-              </TableCell>
-              <TableCell>
-                <Skeleton className="h-5 w-14 rounded-full" />
-              </TableCell>
-              <TableCell>
-                <Skeleton className="h-5 w-16 rounded-full" />
-              </TableCell>
-              <TableCell>
-                <Skeleton className="h-4 w-24" />
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </div>
-  )
-}
-
-function UsersTable({
-  users,
-  currentUserId,
-  fetching,
-  emptyText,
-}: {
-  users: PublicUser[]
-  currentUserId: string | undefined
-  fetching: boolean
-  emptyText: string
-}) {
-  return (
-    // The table stays mounted while a refetch is in flight, so the page does
-    // not jump; `aria-busy` is the only sign that the rows may be stale.
-    <div aria-busy={fetching} className="rounded-md border">
-      <Table aria-label="Users">
-        <TableHeader>
-          <TableRow>
-            {TABLE_COLUMNS.map((column) => (
-              <TableHead key={column}>{column}</TableHead>
-            ))}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {users.length === 0 ? (
-            <TableRow>
-              <TableCell colSpan={5} className="text-center text-muted-foreground">
-                {emptyText}
-              </TableCell>
-            </TableRow>
-          ) : (
-            users.map((user) => (
-              <TableRow key={user.id}>
-                <TableCell className="font-medium">
-                  {user.name}
-                  {user.id === currentUserId && (
-                    <span className="text-muted-foreground"> (you)</span>
-                  )}
-                </TableCell>
-                <TableCell>{user.email}</TableCell>
-                <TableCell>
-                  <Badge variant={user.role === 'ADMIN' ? 'default' : 'secondary'}>
-                    {user.role === 'ADMIN' ? 'Admin' : 'Agent'}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <Badge variant={user.active ? 'outline' : 'destructive'}>
-                    {user.active ? 'Active' : 'Inactive'}
-                  </Badge>
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  <time dateTime={user.createdAt}>
-                    {new Date(user.createdAt).toLocaleDateString(undefined, { dateStyle: 'medium' })}
-                  </time>
-                </TableCell>
-              </TableRow>
-            ))
-          )}
-        </TableBody>
-      </Table>
-    </div>
   )
 }
 

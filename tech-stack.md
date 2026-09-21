@@ -60,6 +60,10 @@ Technology decisions for the AI-powered ticket management system. See `project-s
 
 - **Node.js 22 LTS + Express 5 + TypeScript**.
 - Request validation at every route boundary - no unvalidated input reaches a service.
+  Bodies that a client form also fills are validated by a Zod schema shared with that
+  form, kept in the `core/` workspace (`@helpdesk/core`) and imported by both sides, so
+  the form and the API cannot drift and the API's 400 carries the form's message. Plain
+  TypeScript, no build: Bun runs it directly on the server and Vite serves it from source.
 - Layered structure - routes to services to data access. Business logic lives in services, not in route handlers.
 - Suggested layout:
 

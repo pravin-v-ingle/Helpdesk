@@ -1,6 +1,7 @@
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { APIError } from "better-auth/api";
+import { Role } from "../generated/prisma/client.ts";
 import { prisma } from "./prisma.ts";
 import { env, isProduction } from "../env.ts";
 
@@ -52,9 +53,9 @@ export const auth = betterAuth({
        * service sets it directly through Prisma instead.
        */
       role: {
-        type: ["ADMIN", "AGENT"],
+        type: Object.values(Role),
         required: false,
-        defaultValue: "AGENT",
+        defaultValue: Role.AGENT,
         input: false,
       },
       active: {

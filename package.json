@@ -2,7 +2,7 @@
   "name": "helpdesk",
   "private": true,
   "type": "module",
-  "workspaces": ["client", "server", "e2e"],
+  "workspaces": ["core", "client", "server", "e2e"],
   "scripts": {
     "dev": "bun run --filter '*' --parallel dev",
     "build": "bun run --filter '*' build",

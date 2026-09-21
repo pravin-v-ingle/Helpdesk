@@ -2,12 +2,13 @@
  * The admin users API (`/api/users`). Transport stays in `api.ts`; this file
  * knows the endpoint's parameters and response shape.
  */
+import type { CreateUserInput } from '@helpdesk/core/schemas/users'
 import { queryOptions } from '@tanstack/react-query'
-import { apiFetch, type PublicUser } from './api.ts'
+import { apiFetch, type PublicUser, type Role } from './api.ts'
 
 export type UserListParams = {
   q?: string
-  role?: PublicUser['role']
+  role?: Role
   active?: boolean
   page?: number
   pageSize?: number
@@ -22,9 +23,10 @@ export type UserListResponse = {
 }
 
 /**
- * Query keys for everything under `/api/users`. `all` is what a write should
- * invalidate once 2.13b adds create and edit; the list key carries its params
- * so each page and filter combination is cached on its own.
+ * Query keys for everything under `/api/users`. `all` is what a write
+ * invalidates - `createUser` callers do, and edit will do the same - so every
+ * cached page refetches; the list key carries its params so each page and
+ * filter combination is cached on its own.
  */
 export const userKeys = {
   all: ['users'] as const,
@@ -46,4 +48,14 @@ export function listUsers(params: UserListParams, signal?: AbortSignal): Promise
   const query = search.toString()
 
   return apiFetch<UserListResponse>(query ? `/api/users?${query}` : '/api/users', { signal })
+}
+
+/**
+ * Creates a user and returns it. The body type is the shared schema's output
+ * (`@helpdesk/core`), the same one the route parses; `role` is omitted and
+ * the server defaults it to AGENT. A duplicate email rejects with a 409.
+ */
+export async function createUser(input: CreateUserInput): Promise<PublicUser> {
+  const { user } = await apiFetch<{ user: PublicUser }>('/api/users', { method: 'POST', body: input })
+  return user
 }

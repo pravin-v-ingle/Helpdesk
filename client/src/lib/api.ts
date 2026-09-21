@@ -5,6 +5,26 @@
 import axios, { type Method } from 'axios'
 
 /**
+ * The `Role` enum, mirroring the one Prisma generates from `enum Role` in
+ * `server/prisma/schema.prisma` (`server/src/generated/prisma/enums.ts`). A
+ * const object rather than a TypeScript `enum`: the client tsconfig sets
+ * `erasableSyntaxOnly`, which forbids the keyword, and Prisma 7 generates
+ * this same shape, so the two stay comparable. Use `Role.ADMIN`, never the
+ * string; change both together when the schema changes.
+ */
+export const Role = {
+  ADMIN: 'ADMIN',
+  AGENT: 'AGENT',
+} as const
+
+export type Role = (typeof Role)[keyof typeof Role]
+
+/** Narrows an unknown value - a URL parameter, say - to a member of `Role`. */
+export function isRole(value: unknown): value is Role {
+  return typeof value === 'string' && Object.values<string>(Role).includes(value)
+}
+
+/**
  * The user shape every endpoint returns, mirroring `publicUserSelect` in
  * `server/src/services/users.ts`. Declared here rather than imported from the
  * server workspace: the client tsconfig only includes `src`, and reaching
@@ -15,7 +35,7 @@ export type PublicUser = {
   id: string
   name: string
   email: string
-  role: 'ADMIN' | 'AGENT'
+  role: Role
   active: boolean
   createdAt: string
   updatedAt: string

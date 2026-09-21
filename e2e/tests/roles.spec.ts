@@ -1,5 +1,5 @@
 import { test, expect, type Browser } from "@playwright/test";
-import { createAgent, TEST_USER_PASSWORD, type PublicUser } from "./helpers/api.ts";
+import { createAgent, Role, TEST_USER_PASSWORD, type PublicUser } from "./helpers/api.ts";
 import { signIn } from "./helpers/auth.ts";
 import { ANONYMOUS_STORAGE_STATE, seededAdmin } from "./helpers/env.ts";
 
@@ -44,7 +44,7 @@ test.describe("Admin role", () => {
   test("a newly created user defaults to the AGENT role", async ({ request }) => {
     const agent = await createAgent(request, "Default Role Agent");
 
-    expect(agent.role).toBe("AGENT");
+    expect(agent.role).toBe(Role.AGENT);
     expect(agent.active).toBe(true);
   });
 });

@@ -1,14 +1,16 @@
+import { createUserSchema } from "@helpdesk/core/schemas/users";
 import { Router, type Request } from "express";
-import type { Role } from "../generated/prisma/client.ts";
+import { Role } from "../generated/prisma/client.ts";
 import { requireAuth } from "../middleware/require-auth.ts";
 import { requireRole } from "../middleware/require-role.ts";
 import { HttpError } from "../middleware/error-handler.ts";
+import { parseBody } from "../lib/validate.ts";
 import * as users from "../services/users.ts";
 
 export const usersRouter: Router = Router();
 
 // Everything below is admin-only. project-scope.md: agents cannot manage users.
-usersRouter.use(requireAuth, requireRole("ADMIN"));
+usersRouter.use(requireAuth, requireRole(Role.ADMIN));
 
 usersRouter.get("/", async (req, res) => {
   const query = parseListQuery(req.query);
@@ -23,11 +25,12 @@ usersRouter.get("/:id", async (req, res) => {
 usersRouter.post("/", async (req, res) => {
   const body = req.body ?? {};
 
+  // The three fields the dialog collects are validated by the schema the
+  // dialog itself uses. `role` is not part of it - it is server-owned - so it
+  // is read from the body separately and defaulted here.
   const user = await users.createUser({
-    name: requireString(body.name, "name"),
-    email: requireEmail(body.email),
-    password: requireString(body.password, "password"),
-    role: parseRole(body.role) ?? "AGENT",
+    ...parseBody(createUserSchema, body),
+    role: parseRole(body.role) ?? Role.AGENT,
   });
 
   res.status(201).json({ user });
@@ -65,8 +68,9 @@ usersRouter.delete("/:id", async (req, res) => {
 });
 
 // --- input validation -------------------------------------------------------
-// Hand-rolled while the surface is this small. Worth swapping for a schema
-// library once tickets arrive in Phase 3.
+// Bodies that a client form also validates go through the shared schema in
+// `@helpdesk/core` (see `parseBody` above). What is left here is server-only
+// input: the PATCH fields and the role, which no form sends.
 
 function requireString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim() === "") {
@@ -75,23 +79,19 @@ function requireString(value: unknown, field: string): string {
   return value;
 }
 
-function requireEmail(value: unknown): string {
-  const email = requireString(value, "email");
-  // Deliberately loose. The real check is that a person can receive mail there.
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-    throw new HttpError(400, "email must be a valid email address");
-  }
-  return email;
+/** Narrows an unknown request value to a member of the `Role` enum. */
+function isRole(value: unknown): value is Role {
+  return typeof value === "string" && Object.values<string>(Role).includes(value);
 }
 
 function parseRole(value: unknown): Role | undefined {
   if (value === undefined || value === null) return undefined;
-  return value === "ADMIN" || value === "AGENT" ? value : undefined;
+  return isRole(value) ? value : undefined;
 }
 
 function parseRoleOrThrow(value: unknown): Role {
   const role = parseRole(value);
-  if (!role) throw new HttpError(400, "role must be ADMIN or AGENT");
+  if (!role) throw new HttpError(400, `role must be ${Object.values(Role).join(" or ")}`);
   return role;
 }
 

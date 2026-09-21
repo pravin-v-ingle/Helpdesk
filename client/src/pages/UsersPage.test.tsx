@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthValue } from '../auth/auth-context.ts'
-import { ApiError, apiFetch, type PublicUser } from '../lib/api.ts'
+import { ApiError, apiFetch, Role, type PublicUser } from '../lib/api.ts'
 import type { UserListResponse } from '../lib/users.ts'
 import { UsersPage } from './UsersPage.tsx'
 
@@ -21,7 +21,7 @@ const admin: PublicUser = {
   id: 'user-admin',
   name: 'Ada Admin',
   email: 'ada@example.com',
-  role: 'ADMIN',
+  role: Role.ADMIN,
   active: true,
   createdAt: '2026-09-01T10:00:00.000Z',
   updatedAt: '2026-09-01T10:00:00.000Z',
@@ -31,7 +31,7 @@ const agent: PublicUser = {
   id: 'user-agent',
   name: 'Bob Agent',
   email: 'bob@example.com',
-  role: 'AGENT',
+  role: Role.AGENT,
   active: true,
   createdAt: '2026-09-10T10:00:00.000Z',
   updatedAt: '2026-09-10T10:00:00.000Z',
@@ -41,10 +41,20 @@ const former: PublicUser = {
   id: 'user-former',
   name: 'Cy Former',
   email: 'cy@example.com',
-  role: 'AGENT',
+  role: Role.AGENT,
   active: false,
   createdAt: '2026-08-20T10:00:00.000Z',
   updatedAt: '2026-09-15T10:00:00.000Z',
+}
+
+const newAgent: PublicUser = {
+  id: 'user-new',
+  name: 'Dana New',
+  email: 'dana@example.com',
+  role: Role.AGENT,
+  active: true,
+  createdAt: '2026-09-20T10:00:00.000Z',
+  updatedAt: '2026-09-20T10:00:00.000Z',
 }
 
 function listResponse(
@@ -323,6 +333,39 @@ describe('UsersPage', () => {
     const page = renderPage('/users?q=nobody')
 
     expect(within(await page.table()).getByText('No users match your filters.')).toBeInTheDocument()
+  })
+
+  it('adds a user through the dialog and refreshes the list', async () => {
+    // The list answers with the new row only once the POST has been made.
+    let created = false
+    mockedApiFetch.mockImplementation(async (_path, options) => {
+      if (options?.method === 'POST') {
+        created = true
+        return { user: newAgent }
+      }
+      return listResponse(created ? [newAgent, admin] : [admin])
+    })
+    const user = userEvent.setup()
+    const page = renderPage()
+    expect(bodyRows(await page.table())).toHaveLength(1)
+
+    await user.click(screen.getByRole('button', { name: 'Add user' }))
+    await screen.findByRole('dialog', { name: 'Add user' })
+    await user.type(screen.getByLabelText('Name'), newAgent.name)
+    await user.type(screen.getByLabelText('Email'), newAgent.email)
+    await user.type(screen.getByLabelText('Password'), 'correct horse')
+    await user.click(screen.getByRole('button', { name: 'Create user' }))
+
+    // Radix hides the page from assistive technology while the dialog is
+    // open, so the table is only queryable again once it has gone.
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(await screen.findByText(newAgent.name)).toBeInTheDocument()
+    expect(bodyRows(await page.table())).toHaveLength(2)
+    expect(requestedPaths()).toEqual([
+      '/api/users?page=1&pageSize=20',
+      '/api/users',
+      '/api/users?page=1&pageSize=20',
+    ])
   })
 
   it('shows the server\'s message when it refuses the request', async () => {

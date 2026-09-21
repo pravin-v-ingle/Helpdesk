@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router'
 import { ProtectedRoute } from './auth/ProtectedRoute.tsx'
 import { RequireRole } from './auth/RequireRole.tsx'
 import { AppLayout } from './components/AppLayout.tsx'
+import { Role } from './lib/api.ts'
 import { HomePage } from './pages/HomePage.tsx'
 import { LoginPage } from './pages/LoginPage.tsx'
 import { UsersPage } from './pages/UsersPage.tsx'
@@ -20,7 +21,7 @@ function App() {
         <Route element={<AppLayout />}>
           <Route path="/" element={<HomePage />} />
 
-          <Route element={<RequireRole role="ADMIN" />}>
+          <Route element={<RequireRole role={Role.ADMIN} />}>
             <Route path="/users" element={<UsersPage />} />
           </Route>
         </Route>

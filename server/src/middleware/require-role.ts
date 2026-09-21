@@ -6,7 +6,7 @@ import { HttpError } from "./error-handler.ts";
  * Restricts a route to the given roles. Always mount it after `requireAuth`,
  * which is what puts `req.user` in place:
  *
- *     router.use(requireAuth, requireRole("ADMIN"));
+ *     router.use(requireAuth, requireRole(Role.ADMIN));
  *
  * A signed-in user with the wrong role gets a 403, not a 401 - they are
  * authenticated, just not allowed. Sending 401 would make the client's

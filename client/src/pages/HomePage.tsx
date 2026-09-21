@@ -1,4 +1,5 @@
 import { useAuth } from '../auth/auth-context.ts'
+import { Role } from '../lib/api.ts'
 
 /**
  * Placeholder home page. `project-scope.md` does not say what `/` shows; the
@@ -15,7 +16,7 @@ export function HomePage() {
       <h1 className="mb-2 text-2xl font-semibold tracking-tight">Welcome, {user.name}</h1>
       <p className="text-sm text-muted-foreground">
         You are signed in as {user.email} with the{' '}
-        {user.role === 'ADMIN' ? 'admin' : 'agent'} role.
+        {user.role === Role.ADMIN ? 'admin' : 'agent'} role.
       </p>
     </main>
   )

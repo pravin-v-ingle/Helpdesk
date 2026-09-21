@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useAuth } from '../auth/auth-context.ts'
+import { Role } from '../lib/api.ts'
 
 export function NavBar() {
   const auth = useAuth()
@@ -27,7 +28,7 @@ export function NavBar() {
         <NavLink to="/" className="text-lg font-semibold tracking-tight">
           Helpdesk
         </NavLink>
-        {user?.role === 'ADMIN' && (
+        {user?.role === Role.ADMIN && (
           <NavLink
             to="/users"
             className={({ isActive }) =>
@@ -45,7 +46,7 @@ export function NavBar() {
       {user && (
         <div className="flex items-center gap-3">
           <span className="text-sm">{user.name}</span>
-          <Badge variant="secondary">{user.role === 'ADMIN' ? 'Admin' : 'Agent'}</Badge>
+          <Badge variant="secondary">{user.role === Role.ADMIN ? 'Admin' : 'Agent'}</Badge>
           <Button
             variant="outline"
             size="sm"

@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { createUser, TEST_USER_PASSWORD, uniqueEmail, type PublicUser } from "./helpers/api.ts";
+import { createUser, Role, TEST_USER_PASSWORD, uniqueEmail, type PublicUser } from "./helpers/api.ts";
 import { ANONYMOUS_STORAGE_STATE, seededAdmin } from "./helpers/env.ts";
 
 /**
@@ -66,7 +66,7 @@ test.describe("API guards as the admin", () => {
     expect(user).toMatchObject({
       email: seededAdmin.email,
       name: seededAdmin.name,
-      role: "ADMIN",
+      role: Role.ADMIN,
       active: true,
     });
     expect(Object.keys(user).sort()).toEqual(
@@ -99,7 +99,7 @@ test.describe("API guards as the admin", () => {
     });
 
     expect(res.status(), await res.text()).toBe(201);
-    expect(((await res.json()) as { user: PublicUser }).user.role).toBe("AGENT");
+    expect(((await res.json()) as { user: PublicUser }).user.role).toBe(Role.AGENT);
   });
 
   test("refuses a password shorter than Better Auth's minimum", async ({ request }) => {
@@ -108,7 +108,7 @@ test.describe("API guards as the admin", () => {
     });
 
     expect(res.status()).toBe(400);
-    expect(await res.json()).toEqual({ error: "Password must be at least 8 characters" });
+    expect(await res.json()).toEqual({ error: "Password must be at least 8 characters." });
   });
 
   test("refuses a duplicate email with 409", async ({ request }) => {
@@ -143,12 +143,12 @@ test.describe("API guards as the admin", () => {
   test("refuses to change the acting admin's role", async ({ request }) => {
     const me = ((await (await request.get("/api/me")).json()) as { user: PublicUser }).user;
 
-    const res = await request.patch(`/api/users/${me.id}`, { data: { role: "AGENT" } });
+    const res = await request.patch(`/api/users/${me.id}`, { data: { role: Role.AGENT } });
     expect(res.status()).toBe(400);
     expect(await res.json()).toEqual({ error: "You cannot change your own role" });
 
     const after = ((await (await request.get("/api/me")).json()) as { user: PublicUser }).user;
-    expect(after.role).toBe("ADMIN");
+    expect(after.role).toBe(Role.ADMIN);
   });
 
   test("returns 404 for an unknown user id", async ({ request }) => {

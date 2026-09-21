@@ -1,4 +1,4 @@
-import { Prisma, type Role } from "../generated/prisma/client.ts";
+import { Prisma, Role } from "../generated/prisma/client.ts";
 import { prisma } from "../lib/prisma.ts";
 import { createUserWithPassword } from "../lib/auth-accounts.ts";
 import { HttpError } from "../middleware/error-handler.ts";
@@ -117,7 +117,7 @@ export async function updateUser(
       throw new HttpError(400, "You cannot change your own role");
     }
 
-    if (input.role && input.role !== "ADMIN" && user.role === "ADMIN") {
+    if (input.role && input.role !== Role.ADMIN && user.role === Role.ADMIN) {
       await assertNotLastActiveAdmin(tx, id);
     }
 
@@ -145,7 +145,7 @@ export async function deactivateUser(id: string, actingUserId: string) {
       throw new HttpError(400, "You cannot deactivate your own account");
     }
     if (!user.active) return user;
-    if (user.role === "ADMIN") await assertNotLastActiveAdmin(tx, id);
+    if (user.role === Role.ADMIN) await assertNotLastActiveAdmin(tx, id);
 
     const updated = await tx.user.update({
       where: { id },
@@ -176,7 +176,7 @@ export async function reactivateUser(id: string) {
  */
 async function assertNotLastActiveAdmin(tx: Prisma.TransactionClient, id: string) {
   const otherActiveAdmins = await tx.user.count({
-    where: { role: "ADMIN", active: true, id: { not: id } },
+    where: { role: Role.ADMIN, active: true, id: { not: id } },
   });
 
   if (otherActiveAdmins === 0) {
