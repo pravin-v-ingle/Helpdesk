@@ -522,7 +522,12 @@ a file or use `expect` output when debugging.
    `findBy*` for the first appearance of anything that depends on a response,
    and `waitFor` for a URL change. Assert synchronously (`getBy*`,
    `queryBy*`) only for what is already on screen. Real timers throughout;
-   the 300 ms search debounce is short enough to wait for.
+   the 300 ms search debounce is short enough to wait for. **A request that a
+   URL change triggers needs its own `waitFor`**: the URL updates a render
+   before TanStack Query refetches, so `waitFor(url)` followed by a bare
+   `expect(requestedPaths())` is a race that passes locally and fails
+   intermittently in the suite - wrap the request assertion in `waitFor` too
+   (the three filter tests in `UsersPage.test.tsx` do).
 7. **Cover the page's contract**, in roughly this order: initial render
    (loading placeholder, then content); the request it makes by default;
    filters read from the URL and shown in the controls; normalisation of
@@ -559,7 +564,13 @@ the test itself:
   `FieldError` and the form-level `<p>` are both `role="alert"`, so assert
   messages with `findByText`, not `findByRole('alert')`. `DialogTrigger`
   opens on `user.click`; fall back to focus + `{Enter}` if the suite ever
-  drops the click the way `Select` does.
+  drops the click the way `Select` does. A click *outside* the dialog means a
+  click on Radix's overlay, which has no role or accessible name - query it
+  with `document.querySelector('[data-slot="dialog-overlay"]')`, the one
+  place a DOM query is the right handle (`overlay()` in
+  `UsersPage.test.tsx`). Escape and the overlay both dismiss under jsdom; a
+  click inside the content does not, so an outside-click test is testing
+  something real.
 
 **When a test fails.** A red test after a client change is either the change
 breaking behaviour or the test pinning behaviour that was meant to change.

@@ -127,6 +127,23 @@ async function choose(user: ReturnType<typeof userEvent.setup>, label: string, o
   await user.click(await screen.findByRole('option', { name: option }))
 }
 
+/** Opens the create-user dialog from the page's own button. */
+async function openCreateDialog(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: 'Add user' }))
+  return screen.findByRole('dialog', { name: 'Add user' })
+}
+
+/**
+ * Radix's dialog overlay - what a click "outside" actually lands on. It has no
+ * role or accessible name of its own, so it is found by the `data-slot`
+ * attribute shadcn puts on it; there is no better handle.
+ */
+function overlay() {
+  const element = document.querySelector('[data-slot="dialog-overlay"]')
+  if (!element) throw new Error('the dialog overlay is not on screen')
+  return element
+}
+
 describe('UsersPage', () => {
   beforeEach(() => {
     mockedApiFetch.mockReset()
@@ -226,10 +243,14 @@ describe('UsersPage', () => {
     expect(mockedApiFetch).toHaveBeenCalledTimes(1)
 
     await waitFor(() => expect(page.search()).toBe('?pageSize=2&q=ada'))
-    expect(requestedPaths()).toEqual([
-      '/api/users?page=2&pageSize=2',
-      '/api/users?q=ada&page=1&pageSize=2',
-    ])
+    // The refetch follows the URL change by a render, so it is awaited too -
+    // asserting it synchronously here races the query and fails intermittently.
+    await waitFor(() =>
+      expect(requestedPaths()).toEqual([
+        '/api/users?page=2&pageSize=2',
+        '/api/users?q=ada&page=1&pageSize=2',
+      ]),
+    )
   })
 
   it('filters by role through the select and drops the page', async () => {
@@ -241,7 +262,9 @@ describe('UsersPage', () => {
     await choose(user, 'Role', 'Agent')
 
     await waitFor(() => expect(page.search()).toBe('?role=AGENT'))
-    expect(requestedPaths()).toContain('/api/users?role=AGENT&page=1&pageSize=20')
+    await waitFor(() =>
+      expect(requestedPaths()).toContain('/api/users?role=AGENT&page=1&pageSize=20'),
+    )
   })
 
   it('filters by status through the select', async () => {
@@ -253,7 +276,9 @@ describe('UsersPage', () => {
     await choose(user, 'Status', 'Inactive')
 
     await waitFor(() => expect(page.search()).toBe('?active=false'))
-    expect(requestedPaths()).toContain('/api/users?active=false&page=1&pageSize=20')
+    await waitFor(() =>
+      expect(requestedPaths()).toContain('/api/users?active=false&page=1&pageSize=20'),
+    )
   })
 
   it('pages with Previous and Next, disabled at the ends', async () => {
@@ -366,6 +391,68 @@ describe('UsersPage', () => {
       '/api/users',
       '/api/users?page=1&pageSize=20',
     ])
+  })
+
+  it('opens the create dialog from the "Add user" button', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([admin]))
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.table()
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Add user' }))
+
+    const dialog = await screen.findByRole('dialog', { name: 'Add user' })
+    expect(within(dialog).getByLabelText('Name')).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('Email')).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('Password')).toBeInTheDocument()
+    // Opening the dialog asks the server for nothing.
+    expect(requestedPaths()).toEqual(['/api/users?page=1&pageSize=20'])
+  })
+
+  it('closes the create dialog on Escape, leaving the list untouched', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([admin]))
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.table()
+    await openCreateDialog(user)
+
+    await user.keyboard('{Escape}')
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    // The page behind is reachable again, and nothing was created.
+    expect(bodyRows(await page.table())).toHaveLength(1)
+    expect(requestedPaths()).toEqual(['/api/users?page=1&pageSize=20'])
+  })
+
+  it('closes the create dialog on a click outside it', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([admin]))
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.table()
+    await openCreateDialog(user)
+
+    await user.click(overlay())
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(bodyRows(await page.table())).toHaveLength(1)
+    expect(requestedPaths()).toEqual(['/api/users?page=1&pageSize=20'])
+  })
+
+  it('discards what was typed when the dialog is dismissed and reopened', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([admin]))
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.table()
+    await openCreateDialog(user)
+
+    await user.type(screen.getByLabelText('Name'), 'Dana New')
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    await openCreateDialog(user)
+    expect(screen.getByLabelText('Name')).toHaveValue('')
   })
 
   it('shows the server\'s message when it refuses the request', async () => {

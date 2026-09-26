@@ -73,7 +73,7 @@ export function UsersTable({
                   </Badge>
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  <time dateTime={user.createdAt}>
+                   <time dateTime={user.createdAt}>
                     {new Date(user.createdAt).toLocaleDateString(undefined, { dateStyle: 'medium' })}
                   </time>
                 </TableCell>

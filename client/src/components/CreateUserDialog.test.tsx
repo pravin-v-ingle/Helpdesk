@@ -110,6 +110,119 @@ describe('CreateUserDialog', () => {
     expect(mockedApiFetch).not.toHaveBeenCalled()
   })
 
+  it('accepts a 128-character password and refuses a longer one', async () => {
+    mockedApiFetch.mockResolvedValue({ user: created })
+    const user = userEvent.setup()
+    renderDialog()
+    await open(user)
+
+    // 129 characters: one past the maximum the shared schema and Better Auth
+    // both set. Typed straight into the field, since `fill` is for short values.
+    await fill(user, { name: 'Dana New', email: 'dana@example.com' })
+    await user.type(screen.getByLabelText('Password'), 'a'.repeat(129))
+    await submit(user)
+
+    expect(await screen.findByText('Password must be at most 128 characters.')).toBeInTheDocument()
+    expect(mockedApiFetch).not.toHaveBeenCalled()
+
+    // One character shorter is the boundary, and it goes through.
+    await user.clear(screen.getByLabelText('Password'))
+    await user.type(screen.getByLabelText('Password'), 'a'.repeat(128))
+    await submit(user)
+
+    await expectClosed()
+    expect(mockedApiFetch).toHaveBeenCalledWith('/api/users', {
+      method: 'POST',
+      body: { name: 'Dana New', email: 'dana@example.com', password: 'a'.repeat(128) },
+    })
+  })
+
+  it('sends the password exactly as typed, including surrounding spaces', async () => {
+    mockedApiFetch.mockResolvedValue({ user: created })
+    const user = userEvent.setup()
+    renderDialog()
+    await open(user)
+
+    // Deliberate: the schema trims the name and email but never the password,
+    // because sign-in compares the raw string against the hash. Trimming here
+    // would create an account that cannot be signed into with the password the
+    // admin was given.
+    await fill(user, {
+      name: 'Dana New',
+      email: '  dana@example.com  ',
+      password: '  correct horse  ',
+    })
+    await submit(user)
+
+    await expectClosed()
+    expect(mockedApiFetch).toHaveBeenCalledWith('/api/users', {
+      method: 'POST',
+      body: { name: 'Dana New', email: 'dana@example.com', password: '  correct horse  ' },
+    })
+  })
+
+  it('clears a field error once the value is corrected', async () => {
+    mockedApiFetch.mockResolvedValue({ user: created })
+    const user = userEvent.setup()
+    renderDialog()
+    await open(user)
+
+    await fill(user, { name: 'ab', email: 'dana@example.com', password: 'correct horse' })
+    await submit(user)
+    expect(await screen.findByText('Name must be at least 3 characters.')).toBeInTheDocument()
+
+    await user.type(screen.getByLabelText('Name'), 'c')
+    await submit(user)
+
+    await expectClosed()
+    expect(mockedApiFetch).toHaveBeenCalledWith('/api/users', {
+      method: 'POST',
+      body: { name: 'abc', email: 'dana@example.com', password: 'correct horse' },
+    })
+  })
+
+  it('recovers from a duplicate email: a new address succeeds', async () => {
+    mockedApiFetch
+      .mockRejectedValueOnce(new ApiError(409, 'A user with that email already exists'))
+      .mockResolvedValueOnce({ user: created })
+    const user = userEvent.setup()
+    renderDialog()
+    await open(user)
+
+    await fill(user, { name: 'Dana New', email: 'taken@example.com', password: 'correct horse' })
+    await submit(user)
+    expect(await screen.findByText('A user with that email already exists')).toBeInTheDocument()
+
+    await user.clear(screen.getByLabelText('Email'))
+    await user.type(screen.getByLabelText('Email'), 'dana@example.com')
+    await submit(user)
+
+    await expectClosed()
+    expect(mockedApiFetch).toHaveBeenCalledTimes(2)
+    expect(mockedApiFetch).toHaveBeenLastCalledWith('/api/users', {
+      method: 'POST',
+      body: { name: 'Dana New', email: 'dana@example.com', password: 'correct horse' },
+    })
+  })
+
+  it('drops a stale form-level error on the next submit', async () => {
+    mockedApiFetch
+      .mockRejectedValueOnce(new ApiError(500, 'Internal server error'))
+      .mockResolvedValueOnce({ user: created })
+    const user = userEvent.setup()
+    renderDialog()
+    await open(user)
+
+    await fill(user, { name: 'Dana New', email: 'dana@example.com', password: 'correct horse' })
+    await submit(user)
+    expect(await screen.findByText('Internal server error')).toBeInTheDocument()
+
+    await submit(user)
+
+    await expectClosed()
+    expect(screen.queryByText('Internal server error')).not.toBeInTheDocument()
+  })
+
   it('creates the user, invalidates the list and closes', async () => {
     mockedApiFetch.mockResolvedValue({ user: created })
     const user = userEvent.setup()
@@ -206,6 +319,24 @@ describe('CreateUserDialog', () => {
 
     await expectClosed()
     expect(mockedApiFetch).not.toHaveBeenCalled()
+  })
+
+  it('submits on Enter from within a field', async () => {
+    mockedApiFetch.mockResolvedValue({ user: created })
+    const user = userEvent.setup()
+    renderDialog()
+    await open(user)
+
+    await fill(user, { name: 'Dana New', email: 'dana@example.com' })
+    // Implicit submission: the form has one submit button, so Enter in a text
+    // field triggers it. The admin never has to reach for the mouse.
+    await user.type(screen.getByLabelText('Password'), 'correct horse{Enter}')
+
+    await expectClosed()
+    expect(mockedApiFetch).toHaveBeenCalledWith('/api/users', {
+      method: 'POST',
+      body: { name: 'Dana New', email: 'dana@example.com', password: 'correct horse' },
+    })
   })
 
   it('cannot be dismissed while the request is in flight', async () => {
