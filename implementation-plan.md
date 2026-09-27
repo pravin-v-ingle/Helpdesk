@@ -50,7 +50,8 @@ configuring it rather than by writing the code. The endpoint names are its own:
 - [x] 2.12 Build the auth context and protected route wrapper.
 - [x] 2.13a Build the admin user list page: `/users` shows a searchable, filterable, paginated table; `GET /api/users` gains `q`, `role`, `active`, `page`, `pageSize`.
 - [x] 2.13b Add the create-user dialog to `/users`.
-- [ ] 2.13c Add edit/deactivate actions to `/users`.
+- [x] 2.13c Add the edit-user dialog to `/users`: per-row edit button, `PATCH` accepts name, email and an optional password.
+- [ ] 2.13d Add a deactivate/reactivate action to `/users`.
 - [x] 2.14 Redirect to login on a 401 anywhere in the client.
 - [x] 2.15 Scaffold Playwright end-to-end testing in an `e2e/` workspace against a separate `helpdesk_test` database, reset and seeded on every run. No specs yet.
 

@@ -9,15 +9,18 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Role, type PublicUser } from '../lib/api.ts'
+import { EditUserDialog } from './EditUserDialog.tsx'
 
-const TABLE_COLUMNS = ['Name', 'Email', 'Role', 'Status', 'Created'] as const
+const TABLE_COLUMNS = ['Name', 'Email', 'Role', 'Status', 'Created', 'Actions'] as const
 const SKELETON_ROWS = 5
 
 /**
  * The admin user list as a table. Presentational: it is given the rows to
  * show and says nothing about where they came from, so the page owns the
- * query, the filters and the paging. `UsersTableSkeleton` below is its
- * loading twin and shares the column set, which is why they live together.
+ * query, the filters and the paging. The one exception is the Actions column's
+ * `EditUserDialog`, which owns its own mutation and invalidates the list
+ * itself. `UsersTableSkeleton` below is its loading twin and shares the column
+ * set, which is why they live together.
  */
 export function UsersTable({
   users,
@@ -41,7 +44,9 @@ export function UsersTable({
         <TableHeader>
           <TableRow>
             {TABLE_COLUMNS.map((column) => (
-              <TableHead key={column}>{column}</TableHead>
+              <TableHead key={column} className={column === 'Actions' ? 'text-right' : undefined}>
+                {column}
+              </TableHead>
             ))}
           </TableRow>
         </TableHeader>
@@ -73,9 +78,12 @@ export function UsersTable({
                   </Badge>
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                   <time dateTime={user.createdAt}>
+                  <time dateTime={user.createdAt}>
                     {new Date(user.createdAt).toLocaleDateString(undefined, { dateStyle: 'medium' })}
                   </time>
+                </TableCell>
+                <TableCell className="text-right">
+                  <EditUserDialog user={user} />
                 </TableCell>
               </TableRow>
             ))
@@ -123,6 +131,9 @@ export function UsersTableSkeleton() {
               </TableCell>
               <TableCell>
                 <Skeleton className="h-4 w-24" />
+              </TableCell>
+              <TableCell className="text-right">
+                <Skeleton className="ml-auto size-8" />
               </TableCell>
             </TableRow>
           ))}

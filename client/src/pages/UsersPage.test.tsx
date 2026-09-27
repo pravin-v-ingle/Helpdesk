@@ -166,6 +166,7 @@ describe('UsersPage', () => {
       'Role',
       'Status',
       'Created',
+      'Actions',
     ])
 
     const rows = bodyRows(table)
@@ -391,6 +392,49 @@ describe('UsersPage', () => {
       '/api/users',
       '/api/users?page=1&pageSize=20',
     ])
+  })
+
+  it('edits a user from its row and refreshes the list', async () => {
+    // The list answers with the new name only once the PATCH has been made.
+    let renamed = false
+    mockedApiFetch.mockImplementation(async (_path, options) => {
+      if (options?.method === 'PATCH') {
+        renamed = true
+        return { user: { ...agent, name: 'Bobby Agent' } }
+      }
+      return listResponse([renamed ? { ...agent, name: 'Bobby Agent' } : agent])
+    })
+    const user = userEvent.setup()
+    const page = renderPage()
+    expect(within(await page.table()).getByText('Bob Agent')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Edit Bob Agent' }))
+    await screen.findByRole('dialog', { name: 'Edit user' })
+    // The dialog opens on the row's own values, so only the change is typed.
+    await user.clear(screen.getByLabelText('Name'))
+    await user.type(screen.getByLabelText('Name'), 'Bobby Agent')
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    // Radix hides the page from assistive technology while the dialog is
+    // open, so the table is only queryable again once it has gone.
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(await screen.findByText('Bobby Agent')).toBeInTheDocument()
+    expect(requestedPaths()).toEqual([
+      '/api/users?page=1&pageSize=20',
+      '/api/users/user-agent',
+      '/api/users?page=1&pageSize=20',
+    ])
+  })
+
+  it('gives every row its own edit button', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([agent, admin, former]))
+    const page = renderPage()
+    await page.table()
+
+    expect(screen.getByRole('button', { name: 'Edit Bob Agent' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit Ada Admin' })).toBeInTheDocument()
+    // Deactivated users can still be edited.
+    expect(screen.getByRole('button', { name: 'Edit Cy Former' })).toBeInTheDocument()
   })
 
   it('opens the create dialog from the "Add user" button', async () => {

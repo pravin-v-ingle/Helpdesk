@@ -2,7 +2,7 @@
  * The admin users API (`/api/users`). Transport stays in `api.ts`; this file
  * knows the endpoint's parameters and response shape.
  */
-import type { CreateUserInput } from '@helpdesk/core/schemas/users'
+import type { CreateUserInput, EditUserInput } from '@helpdesk/core/schemas/users'
 import { queryOptions } from '@tanstack/react-query'
 import { apiFetch, type PublicUser, type Role } from './api.ts'
 
@@ -57,5 +57,20 @@ export function listUsers(params: UserListParams, signal?: AbortSignal): Promise
  */
 export async function createUser(input: CreateUserInput): Promise<PublicUser> {
   const { user } = await apiFetch<{ user: PublicUser }>('/api/users', { method: 'POST', body: input })
+  return user
+}
+
+/**
+ * Updates a user and returns the saved row. The body type is the edit form's
+ * schema output (`@helpdesk/core`), where a blank password has already become
+ * `undefined` - so an untouched password field sends no `password` key and the
+ * server leaves the account's password alone. A duplicate email rejects with a
+ * 409, the same as create.
+ */
+export async function updateUser(id: string, input: EditUserInput): Promise<PublicUser> {
+  const { user } = await apiFetch<{ user: PublicUser }>(`/api/users/${id}`, {
+    method: 'PATCH',
+    body: input,
+  })
   return user
 }

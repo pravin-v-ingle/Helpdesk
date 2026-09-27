@@ -54,11 +54,12 @@ export async function createUserWithPassword(input: {
 
 /**
  * Sets a user's password, creating the credential account if they do not have
- * one yet. Used by the seed script's `--repair` path.
+ * one yet. Used by the seed script's `--repair` path and by the users
+ * service when an admin edits someone and supplies a new password.
  *
- * Deliberately not exposed through the API: there is no "admin resets an
- * agent's password" endpoint yet, and adding one needs a decision about
- * whether it forces a change on next sign-in.
+ * Setting a password does not force a change on next sign-in - that is still
+ * not built. The caller is responsible for revoking existing sessions;
+ * `updateUser` deletes them, so the old password cannot keep a session alive.
  */
 export async function setUserPassword(userId: string, password: string) {
   const ctx = await auth.$context;

@@ -77,3 +77,13 @@ export async function deactivateUser(
   const { user } = (await res.json()) as { user: PublicUser };
   return user;
 }
+
+/**
+ * Signs in through Better Auth's endpoint in `request`'s own cookie jar, and
+ * returns the raw response so a caller can assert whether the password was
+ * accepted. Use an isolated context (`anonymousContext`) - the project's
+ * default `request` fixture already carries the admin's session.
+ */
+export function signInViaApi(request: APIRequestContext, email: string, password: string) {
+  return request.post("/api/auth/sign-in/email", { data: { email, password } });
+}

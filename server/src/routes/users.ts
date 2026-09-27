@@ -1,4 +1,4 @@
-import { createUserSchema } from "@helpdesk/core/schemas/users";
+import { createUserSchema, updateUserSchema } from "@helpdesk/core/schemas/users";
 import { Router, type Request } from "express";
 import { Role } from "../generated/prisma/client.ts";
 import { requireAuth } from "../middleware/require-auth.ts";
@@ -48,10 +48,15 @@ usersRouter.patch("/:id", async (req, res) => {
     return;
   }
 
+  // The edit form's fields go through the shared schema, which also drops a
+  // blank password so "leave it alone" never reaches the service. `role` is
+  // server-owned and no form sends it, so it is read off the body separately.
+  const profile = parseBody(updateUserSchema, body);
+
   let user = await users.updateUser(
     id,
     {
-      ...(body.name !== undefined && { name: requireString(body.name, "name") }),
+      ...profile,
       ...(body.role !== undefined && { role: parseRoleOrThrow(body.role) }),
     },
     actingUserId,
@@ -68,16 +73,9 @@ usersRouter.delete("/:id", async (req, res) => {
 });
 
 // --- input validation -------------------------------------------------------
-// Bodies that a client form also validates go through the shared schema in
-// `@helpdesk/core` (see `parseBody` above). What is left here is server-only
-// input: the PATCH fields and the role, which no form sends.
-
-function requireString(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new HttpError(400, `${field} is required`);
-  }
-  return value;
-}
+// Request bodies go through the shared schemas in `@helpdesk/core` (see
+// `parseBody` above). What is left here is input no form sends: the
+// server-owned `role`, and the list endpoint's query string.
 
 /** Narrows an unknown request value to a member of the `Role` enum. */
 function isRole(value: unknown): value is Role {

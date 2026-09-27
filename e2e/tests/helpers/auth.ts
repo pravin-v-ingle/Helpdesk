@@ -1,4 +1,5 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Browser, type Page } from "@playwright/test";
+import { ANONYMOUS_STORAGE_STATE } from "./env.ts";
 
 /** The login form's controls, resolved through the real labels and roles. */
 export function loginForm(page: Page) {
@@ -45,4 +46,31 @@ export async function signIn(
 export async function signOut(page: Page) {
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL("/login");
+}
+
+/**
+ * A browser context with no cookies. The `chromium` project starts every test
+ * with the admin's storage state, so any test that needs an anonymous browser
+ * or a second, differently signed-in user needs its own cookie jar. Callers
+ * close the context.
+ */
+export async function anonymousContext(browser: Browser, baseURL: string | undefined) {
+  return browser.newContext({ baseURL, storageState: ANONYMOUS_STORAGE_STATE });
+}
+
+/**
+ * A fresh context signed in through the login form as the given account, plus
+ * its page. Fails the test if the credentials are refused, so a caller can read
+ * it as "this password works". Callers close the context.
+ */
+export async function signInAs(
+  browser: Browser,
+  baseURL: string | undefined,
+  email: string,
+  password: string,
+) {
+  const context = await anonymousContext(browser, baseURL);
+  const page = await context.newPage();
+  await signIn(page, email, password);
+  return { context, page };
 }

@@ -1,6 +1,6 @@
 import { Prisma, Role } from "../generated/prisma/client.ts";
 import { prisma } from "../lib/prisma.ts";
-import { createUserWithPassword } from "../lib/auth-accounts.ts";
+import { createUserWithPassword, setUserPassword } from "../lib/auth-accounts.ts";
 import { HttpError } from "../middleware/error-handler.ts";
 
 /** The user shape the API returns. Never widen this to `include` credentials. */
@@ -74,6 +74,8 @@ export async function createUser(input: {
   password: string;
   role: Role;
 }) {
+  // Already trimmed and lowercased by the shared schema; normalised again here
+  // because the seed script calls this service directly, without it.
   const email = input.email.trim().toLowerCase();
 
   // Better Auth reports a duplicate as a generic failure. Checking first lets
@@ -106,10 +108,10 @@ export async function createUser(input: {
 
 export async function updateUser(
   id: string,
-  input: { name?: string; role?: Role },
+  input: { name?: string; email?: string; password?: string; role?: Role },
   actingUserId: string,
 ) {
-  return serializable(async (tx) => {
+  const updated = await serializable(async (tx) => {
     const user = await getUser(id, tx);
 
     // An admin demoting themselves would lose access to this page mid-request.
@@ -121,15 +123,42 @@ export async function updateUser(
       await assertNotLastActiveAdmin(tx, id);
     }
 
+    // The email is the sign-in identity, so a clash has to be reported rather
+    // than left to the unique constraint's 500. Already normalised by the
+    // shared schema; comparing against the stored value is therefore sound.
+    if (input.email !== undefined && input.email !== user.email) {
+      const taken = await tx.user.findUnique({
+        where: { email: input.email },
+        select: { id: true },
+      });
+      if (taken) throw new HttpError(409, "A user with that email already exists");
+    }
+
     return tx.user.update({
       where: { id },
       data: {
-        ...(input.name !== undefined && { name: input.name.trim() }),
+        ...(input.name !== undefined && { name: input.name }),
+        ...(input.email !== undefined && { email: input.email }),
         ...(input.role !== undefined && { role: input.role }),
       },
       select: publicUserSelect,
     });
   });
+
+  // Last, and outside the transaction above: the password is written through
+  // Better Auth's own adapter, which has no way to join a Prisma transaction.
+  // A failure here therefore leaves the profile change committed - the admin
+  // sees the error and can retry the password on its own.
+  if (input.password !== undefined) {
+    await setUserPassword(id, input.password);
+    // The old password is no longer the one on the account, so sessions opened
+    // with it are revoked - the same reasoning as deactivation. This signs out
+    // an admin who changes their own password; the client's 401 handling then
+    // sends them to the login page.
+    await prisma.session.deleteMany({ where: { userId: id } });
+  }
+
+  return updated;
 }
 
 /**
