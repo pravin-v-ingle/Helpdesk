@@ -15,7 +15,12 @@ import { CreateUserDialog } from '../components/CreateUserDialog.tsx'
 import { UsersTable, UsersTableSkeleton } from '../components/UsersTable.tsx'
 import { useAuth } from '../auth/auth-context.ts'
 import { ApiError, isRole, Role } from '../lib/api.ts'
-import { userListQueryOptions, type UserListParams, type UserListResponse } from '../lib/users.ts'
+import {
+  userListQueryOptions,
+  type UserListParams,
+  type UserListResponse,
+  type UserStatus,
+} from '../lib/users.ts'
 
 // The server's defaults and limits (server/src/routes/users.ts). The URL is
 // normalised against them here so the client never sends a value it would
@@ -28,10 +33,25 @@ const SEARCH_DEBOUNCE_MS = 300
 const NETWORK_ERROR = 'Could not reach the server. Please try again.'
 
 type Filters = Required<Pick<UserListParams, 'page' | 'pageSize'>> &
-  Pick<UserListParams, 'q' | 'role' | 'active'>
+  Pick<UserListParams, 'q' | 'role' | 'status'>
 
 /** Every filter key stored in the URL. `pageSize` is URL-only: no control sets it. */
-type FilterPatch = Partial<Record<'q' | 'role' | 'active' | 'page', string | undefined>>
+type FilterPatch = Partial<Record<'q' | 'role' | 'status' | 'page', string | undefined>>
+
+/**
+ * The Status select's options, in the order they are offered, and what
+ * `?status=` is validated against. A `Record` keyed by the union rather than a
+ * list, so adding a status is a compile error until it has a label here too.
+ */
+const USER_STATUS_LABELS: Record<UserStatus, string> = {
+  active: 'Active',
+  inactive: 'Inactive',
+  deleted: 'Deleted',
+}
+
+function isUserStatus(value: unknown): value is UserStatus {
+  return typeof value === 'string' && Object.hasOwn(USER_STATUS_LABELS, value)
+}
 
 /**
  * The URL is the only source of filter state, so a reload or Back keeps the
@@ -40,12 +60,12 @@ type FilterPatch = Partial<Record<'q' | 'role' | 'active' | 'page', string | und
 function readFilters(params: URLSearchParams): Filters {
   const q = params.get('q')?.trim().slice(0, MAX_QUERY_LENGTH)
   const role = params.get('role')
-  const active = params.get('active')
+  const status = params.get('status')
 
   return {
     q: q ? q : undefined,
     role: isRole(role) ? role : undefined,
-    active: active === 'true' ? true : active === 'false' ? false : undefined,
+    status: isUserStatus(status) ? status : undefined,
     page: readPositiveInt(params.get('page')) ?? 1,
     pageSize: Math.min(readPositiveInt(params.get('pageSize')) ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE),
   }
@@ -64,7 +84,7 @@ function totalPagesOf({ total, pageSize }: UserListResponse): number {
 /**
  * Admin user management: the list, searchable, filterable and paginated, and
  * the create form (`CreateUserDialog`). The page owns the URL state and the
- * query; `UsersTable` renders the rows. Edit/deactivate actions are task 2.13c.
+ * query; `UsersTable` renders the rows and owns their edit and delete dialogs.
  */
 export function UsersPage() {
   const auth = useAuth()
@@ -102,7 +122,7 @@ export function UsersPage() {
           }
           // A changed filter restarts at page 1, and page 1 is stored as absent
           // so the plain `/users` URL and "page 1 of the same" are one entry.
-          if ('q' in patch || 'role' in patch || 'active' in patch) next.delete('page')
+          if ('q' in patch || 'role' in patch || 'status' in patch) next.delete('page')
           if (next.get('page') === '1') next.delete('page')
           return next
         },
@@ -146,7 +166,7 @@ export function UsersPage() {
 
   const currentUserId = auth.status === 'authenticated' ? auth.user.id : undefined
   const filtered =
-    filters.q !== undefined || filters.role !== undefined || filters.active !== undefined
+    filters.q !== undefined || filters.role !== undefined || filters.status !== undefined
 
   return (
     <main className="flex-1 px-6 py-8">
@@ -190,16 +210,19 @@ export function UsersPage() {
         <div className="flex flex-col gap-2">
           <Label htmlFor="users-status">Status</Label>
           <Select
-            value={filters.active === undefined ? 'all' : String(filters.active)}
-            onValueChange={(value) => updateFilters({ active: value === 'all' ? undefined : value })}
+            value={filters.status ?? 'all'}
+            onValueChange={(value) => updateFilters({ status: value === 'all' ? undefined : value })}
           >
             <SelectTrigger id="users-status" className="w-40">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All statuses</SelectItem>
-              <SelectItem value="true">Active</SelectItem>
-              <SelectItem value="false">Inactive</SelectItem>
+              {Object.entries(USER_STATUS_LABELS).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>

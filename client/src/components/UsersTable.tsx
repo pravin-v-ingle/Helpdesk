@@ -9,6 +9,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Role, type PublicUser } from '../lib/api.ts'
+import { DeleteUserDialog } from './DeleteUserDialog.tsx'
 import { EditUserDialog } from './EditUserDialog.tsx'
 
 const TABLE_COLUMNS = ['Name', 'Email', 'Role', 'Status', 'Created', 'Actions'] as const
@@ -18,9 +19,9 @@ const SKELETON_ROWS = 5
  * The admin user list as a table. Presentational: it is given the rows to
  * show and says nothing about where they came from, so the page owns the
  * query, the filters and the paging. The one exception is the Actions column's
- * `EditUserDialog`, which owns its own mutation and invalidates the list
- * itself. `UsersTableSkeleton` below is its loading twin and shares the column
- * set, which is why they live together.
+ * dialogs, which own their own mutations and invalidate the list themselves.
+ * `UsersTableSkeleton` below is its loading twin and shares the column set,
+ * which is why they live together.
  */
 export function UsersTable({
   users,
@@ -73,9 +74,15 @@ export function UsersTable({
                   </Badge>
                 </TableCell>
                 <TableCell>
-                  <Badge variant={user.active ? 'outline' : 'destructive'}>
-                    {user.active ? 'Active' : 'Inactive'}
-                  </Badge>
+                  {/* Three states, and a deletion outranks the deactivation
+                      that always comes with it. */}
+                  {user.deletedAt !== null ? (
+                    <Badge variant="destructive">Deleted</Badge>
+                  ) : (
+                    <Badge variant={user.active ? 'outline' : 'secondary'}>
+                      {user.active ? 'Active' : 'Inactive'}
+                    </Badge>
+                  )}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   <time dateTime={user.createdAt}>
@@ -83,7 +90,12 @@ export function UsersTable({
                   </time>
                 </TableCell>
                 <TableCell className="text-right">
-                  <EditUserDialog user={user} />
+                  <div className="flex justify-end gap-1">
+                    <EditUserDialog user={user} />
+                    {/* The server refuses to delete an admin outright, so no
+                        button is offered for one. Demoting comes first. */}
+                    {user.role !== Role.ADMIN && <DeleteUserDialog user={user} />}
+                  </div>
                 </TableCell>
               </TableRow>
             ))
@@ -133,7 +145,8 @@ export function UsersTableSkeleton() {
                 <Skeleton className="h-4 w-24" />
               </TableCell>
               <TableCell className="text-right">
-                <Skeleton className="ml-auto size-8" />
+                {/* Stands in for the edit and delete buttons together. */}
+                <Skeleton className="ml-auto h-8 w-[4.25rem]" />
               </TableCell>
             </TableRow>
           ))}

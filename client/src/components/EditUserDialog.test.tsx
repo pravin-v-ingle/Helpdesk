@@ -20,6 +20,7 @@ const agent: PublicUser = {
   email: 'bob@example.com',
   role: Role.AGENT,
   active: true,
+  deletedAt: null,
   createdAt: '2026-09-10T10:00:00.000Z',
   updatedAt: '2026-09-10T10:00:00.000Z',
 }

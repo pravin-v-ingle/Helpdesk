@@ -23,6 +23,7 @@ export type PublicUser = {
   email: string;
   role: Role;
   active: boolean;
+  deletedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -67,12 +68,41 @@ export function createAgent(request: APIRequestContext, name = "Test Agent") {
   return createUser(request, { name, email: uniqueEmail("agent") });
 }
 
-/** Deactivates a user through `DELETE /api/users/:id` as the admin. */
+/**
+ * Suspends a user through `PATCH /api/users/:id { active: false }` as the
+ * admin: `active` goes false and `deletedAt` stays null. Deliberately not
+ * `DELETE`, which is the other removal - see `deleteUser` below.
+ */
 export async function deactivateUser(
   request: APIRequestContext,
   id: string,
 ): Promise<PublicUser> {
+  const res = await request.patch(`/api/users/${id}`, { data: { active: false } });
+  expect(res.status(), await res.text()).toBe(200);
+  const { user } = (await res.json()) as { user: PublicUser };
+  return user;
+}
+
+/**
+ * Deletes a user through `DELETE /api/users/:id` as the admin. A soft delete:
+ * the row stays, with `deletedAt` set and `active` false.
+ */
+export async function deleteUser(
+  request: APIRequestContext,
+  id: string,
+): Promise<PublicUser> {
   const res = await request.delete(`/api/users/${id}`);
+  expect(res.status(), await res.text()).toBe(200);
+  const { user } = (await res.json()) as { user: PublicUser };
+  return user;
+}
+
+/** Reads one user through `GET /api/users/:id` as the admin. */
+export async function fetchUser(
+  request: APIRequestContext,
+  id: string,
+): Promise<PublicUser> {
+  const res = await request.get(`/api/users/${id}`);
   expect(res.status(), await res.text()).toBe(200);
   const { user } = (await res.json()) as { user: PublicUser };
   return user;

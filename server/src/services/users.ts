@@ -10,20 +10,35 @@ const publicUserSelect = {
   email: true,
   role: true,
   active: true,
+  deletedAt: true,
   createdAt: true,
   updatedAt: true,
 } as const satisfies Prisma.UserSelect;
 
 export type PublicUser = Prisma.UserGetPayload<{ select: typeof publicUserSelect }>;
 
+/**
+ * The three states a user can be in, as one filter value. `active` and
+ * `deletedAt` together can express a fourth combination that is never
+ * written, so one parameter is offered rather than two booleans.
+ */
+export type UserStatus = "active" | "inactive" | "deleted";
+
 export type ListUsersOptions = {
   /** Trimmed, non-empty. Case-insensitive substring of name or email. */
   q?: string;
   role?: Role;
-  active?: boolean;
+  status?: UserStatus;
   /** 1-based. */
   page: number;
   pageSize: number;
+};
+
+/** One `where` fragment per status, so the mapping lives in one place. */
+const STATUS_FILTERS: Record<UserStatus, Prisma.UserWhereInput> = {
+  active: { active: true },
+  inactive: { active: false, deletedAt: null },
+  deleted: { deletedAt: { not: null } },
 };
 
 /**
@@ -33,7 +48,7 @@ export type ListUsersOptions = {
 export async function listUsers(options: ListUsersOptions) {
   const where: Prisma.UserWhereInput = {
     ...(options.role !== undefined && { role: options.role }),
-    ...(options.active !== undefined && { active: options.active }),
+    ...(options.status !== undefined && STATUS_FILTERS[options.status]),
     ...(options.q !== undefined && {
       OR: [
         { name: { contains: options.q, mode: "insensitive" } },
@@ -162,19 +177,31 @@ export async function updateUser(
 }
 
 /**
- * Deactivates a user and deletes their sessions, so they are signed out
+ * Suspends a user and deletes their sessions, so they are signed out
  * everywhere immediately rather than at the end of their session lifetime.
  * The row is kept: tickets they touched still need to name them.
+ *
+ * Distinct from `deleteUser` below: a deactivation is reversible housekeeping
+ * and leaves `deletedAt` null, so the two are still told apart afterwards.
  */
 export async function deactivateUser(id: string, actingUserId: string) {
   return serializable(async (tx) => {
     const user = await getUser(id, tx);
 
+    // Self first. The acting user is always an admin - the route is admin-only -
+    // so the role check below would otherwise match their own row too, and tell
+    // them to demote themselves, which is refused in turn.
     if (id === actingUserId) {
       throw new HttpError(400, "You cannot deactivate your own account");
     }
+    // No admin can be removed, not merely the last one - so there is no route
+    // that takes an admin out of the system without a deliberate demotion
+    // first. `assertNotLastActiveAdmin` is therefore unreachable from here; it
+    // still guards `updateUser`'s demotion path.
+    if (user.role === Role.ADMIN) {
+      throw new HttpError(400, "An admin cannot be deactivated. Change their role first.");
+    }
     if (!user.active) return user;
-    if (user.role === Role.ADMIN) await assertNotLastActiveAdmin(tx, id);
 
     const updated = await tx.user.update({
       where: { id },
@@ -187,20 +214,59 @@ export async function deactivateUser(id: string, actingUserId: string) {
   });
 }
 
+/**
+ * Deletes a user, softly: `deletedAt` records that the removal was a deletion
+ * and when, and `active: false` is what actually blocks sign-in, which is why
+ * both are written together. Nothing is ever removed from the table - tickets
+ * the person handled still have to name them - and `reactivateUser` undoes it.
+ */
+export async function deleteUser(id: string, actingUserId: string) {
+  return serializable(async (tx) => {
+    const user = await getUser(id, tx);
+
+    // The same message the deactivate path gives: from the account holder's
+    // side it is the same refusal, and only one of the two can be meant.
+    if (id === actingUserId) {
+      throw new HttpError(400, "You cannot deactivate your own account");
+    }
+    if (user.role === Role.ADMIN) {
+      throw new HttpError(400, "An admin cannot be deleted. Change their role first.");
+    }
+    // Already deleted: a repeated call is a no-op rather than a new timestamp.
+    if (user.deletedAt !== null) return user;
+
+    const updated = await tx.user.update({
+      where: { id },
+      data: { active: false, deletedAt: new Date() },
+      select: publicUserSelect,
+    });
+    await tx.session.deleteMany({ where: { userId: id } });
+
+    return updated;
+  });
+}
+
+/**
+ * Restores a user from either removed state. `deletedAt` is cleared along with
+ * `active`, so the invariant "deleted implies inactive" cannot be left broken
+ * by a reactivation.
+ */
 export async function reactivateUser(id: string) {
   await getUser(id);
 
   return prisma.user.update({
     where: { id },
-    data: { active: true },
+    data: { active: true, deletedAt: null },
     select: publicUserSelect,
   });
 }
 
 /**
- * Stops the system being left with no one who can manage users. Only sound
- * inside a serializable transaction with the write that follows it: as a
- * plain read, two admins removing each other at the same moment would both
+ * Stops the system being left with no one who can manage users. Guards the
+ * demotion in `updateUser` only: since no admin can be deactivated or deleted
+ * without being demoted first, that is now the one way to lose an admin. Only
+ * sound inside a serializable transaction with the write that follows it: as a
+ * plain read, two admins demoting each other at the same moment would both
  * count the other and both succeed.
  */
 async function assertNotLastActiveAdmin(tx: Prisma.TransactionClient, id: string) {

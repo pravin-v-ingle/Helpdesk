@@ -41,8 +41,10 @@ usersRouter.patch("/:id", async (req, res) => {
   const id = req.params.id;
   const actingUserId = req.user!.id;
 
-  // `active: true` is the reactivate path. Deactivation goes through DELETE,
-  // which is also where the "not yourself" and "not the last admin" guards are.
+  // `active: true` restores a user from either removed state, and
+  // `active: false` suspends one. Deleting is a different action with its own
+  // record (`deletedAt`) and goes through DELETE below; both share the "not
+  // yourself" and "no admins" guards in the service.
   if (body.active === false) {
     res.json({ user: await users.deactivateUser(id, actingUserId) });
     return;
@@ -67,9 +69,9 @@ usersRouter.patch("/:id", async (req, res) => {
   res.json({ user });
 });
 
-/** Deactivates rather than deletes - see the note on the service. */
+/** A soft delete: the row stays, marked with `deletedAt` - see the service. */
 usersRouter.delete("/:id", async (req, res) => {
-  res.json({ user: await users.deactivateUser(req.params.id, req.user!.id) });
+  res.json({ user: await users.deleteUser(req.params.id, req.user!.id) });
 });
 
 // --- input validation -------------------------------------------------------
@@ -105,7 +107,7 @@ function parseListQuery(query: Request["query"]): users.ListUsersOptions {
   return {
     q: parseSearch(query.q),
     role: query.role === undefined ? undefined : parseRoleOrThrow(query.role),
-    active: parseBoolean(query.active, "active"),
+    status: query.status === undefined ? undefined : parseStatusOrThrow(query.status),
     page: parseIntParam(query.page, "page", 1),
     pageSize: parseIntParam(query.pageSize, "pageSize", DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE),
   };
@@ -122,11 +124,29 @@ function parseSearch(value: unknown): string | undefined {
   return q;
 }
 
-function parseBoolean(value: unknown, field: string): boolean | undefined {
-  if (value === undefined) return undefined;
-  if (value === "true") return true;
-  if (value === "false") return false;
-  throw new HttpError(400, `${field} must be true or false`);
+/**
+ * Every member of `UserStatus`, keyed by itself so the compiler demands a new
+ * entry when a fourth status is added - a `satisfies UserStatus[]` array would
+ * only check that each member is a status, not that none is missing.
+ */
+const USER_STATUSES: Record<users.UserStatus, true> = {
+  active: true,
+  inactive: true,
+  deleted: true,
+};
+
+/** Narrows an unknown request value - a query parameter - to a `UserStatus`. */
+function isUserStatus(value: unknown): value is users.UserStatus {
+  return typeof value === "string" && Object.hasOwn(USER_STATUSES, value);
+}
+
+/**
+ * The list's Status filter. One parameter rather than `active` plus `deleted`
+ * booleans, which together could ask for a combination that never exists.
+ */
+function parseStatusOrThrow(value: unknown): users.UserStatus {
+  if (isUserStatus(value)) return value;
+  throw new HttpError(400, `status must be ${Object.keys(USER_STATUSES).join(", ")}`);
 }
 
 /**

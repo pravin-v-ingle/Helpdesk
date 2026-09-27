@@ -39,6 +39,10 @@ model User {
   /// Deactivated users keep their rows and their ticket history but cannot
   /// sign in. Deactivating also deletes their sessions.
   active        Boolean   @default(true)
+  /// Set when an admin deletes the account. The row and its ticket history are
+  /// kept. Always accompanied by `active: false`, which is what actually blocks
+  /// sign-in; this field records that the removal was a deletion, and when.
+  deletedAt     DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   sessions      Session[]

@@ -37,6 +37,8 @@ export type PublicUser = {
   email: string
   role: Role
   active: boolean
+  /** Set when the account was deleted; always with `active: false`. */
+  deletedAt: string | null
   createdAt: string
   updatedAt: string
 }

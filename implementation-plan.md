@@ -48,10 +48,11 @@ configuring it rather than by writing the code. The endpoint names are its own:
 - [x] 2.10 Implement admin user endpoints: list, create agent, edit, deactivate.
 - [x] 2.11 Build the login page.
 - [x] 2.12 Build the auth context and protected route wrapper.
-- [x] 2.13a Build the admin user list page: `/users` shows a searchable, filterable, paginated table; `GET /api/users` gains `q`, `role`, `active`, `page`, `pageSize`.
+- [x] 2.13a Build the admin user list page: `/users` shows a searchable, filterable, paginated table; `GET /api/users` gains `q`, `role`, `status`, `page`, `pageSize`.
 - [x] 2.13b Add the create-user dialog to `/users`.
 - [x] 2.13c Add the edit-user dialog to `/users`: per-row edit button, `PATCH` accepts name, email and an optional password.
-- [ ] 2.13d Add a deactivate/reactivate action to `/users`.
+- [x] 2.13d Add a delete action to `/users`: per-row trash button behind a confirmation modal, `DELETE` soft-deletes by setting `deletedAt` and `active: false`, admins are refused, and the row stays in the list as "Deleted".
+- [ ] 2.13e Add a restore (and suspend/reactivate) control to `/users`. The API has supported it since 2.10 - `PATCH { active: true | false }` - but no button invokes it, so a deleted or deactivated user can only be brought back by hand.
 - [x] 2.14 Redirect to login on a 401 anywhere in the client.
 - [x] 2.15 Scaffold Playwright end-to-end testing in an `e2e/` workspace against a separate `helpdesk_test` database, reset and seeded on every run. No specs yet.
 

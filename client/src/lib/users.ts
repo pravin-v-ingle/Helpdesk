@@ -6,10 +6,13 @@ import type { CreateUserInput, EditUserInput } from '@helpdesk/core/schemas/user
 import { queryOptions } from '@tanstack/react-query'
 import { apiFetch, type PublicUser, type Role } from './api.ts'
 
+/** Mirrors `UserStatus` in `server/src/services/users.ts`. */
+export type UserStatus = 'active' | 'inactive' | 'deleted'
+
 export type UserListParams = {
   q?: string
   role?: Role
-  active?: boolean
+  status?: UserStatus
   page?: number
   pageSize?: number
 }
@@ -72,5 +75,15 @@ export async function updateUser(id: string, input: EditUserInput): Promise<Publ
     method: 'PATCH',
     body: input,
   })
+  return user
+}
+
+/**
+ * Deletes a user and returns the saved row - a soft delete, so the row comes
+ * back with `deletedAt` set and `active: false` rather than disappearing from
+ * the list. Refused with a 400 for an admin, or for the caller's own account.
+ */
+export async function deleteUser(id: string): Promise<PublicUser> {
+  const { user } = await apiFetch<{ user: PublicUser }>(`/api/users/${id}`, { method: 'DELETE' })
   return user
 }

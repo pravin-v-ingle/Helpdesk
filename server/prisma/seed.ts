@@ -39,7 +39,7 @@ async function main() {
 
   const existing = await prisma.user.findUnique({
     where: { email: normalisedEmail },
-    select: { id: true, role: true, active: true },
+    select: { id: true, role: true, active: true, deletedAt: true },
   });
 
   if (!existing) {
@@ -70,7 +70,10 @@ async function main() {
   // with no clue why, so this reports the mismatch instead of passing quietly.
   const problems = [
     existing.role !== Role.ADMIN && `its role is ${existing.role}, not ${Role.ADMIN}`,
-    !existing.active && "it is deactivated",
+    // Reported separately from deactivation, which a deleted row also is, so
+    // the message says which of the two happened.
+    existing.deletedAt !== null && "it has been deleted",
+    existing.deletedAt === null && !existing.active && "it is deactivated",
   ].filter(Boolean);
 
   if (!repair) {
@@ -86,7 +89,10 @@ async function main() {
   await prisma.$transaction([
     prisma.user.update({
       where: { id: existing.id },
-      data: { name, role: Role.ADMIN, active: true },
+      // `deletedAt` is cleared with `active`, the way `reactivateUser` does it:
+      // leaving it set would produce the one state the schema forbids, an
+      // account marked deleted that can nonetheless sign in.
+      data: { name, role: Role.ADMIN, active: true, deletedAt: null },
     }),
     // Any session it holds was issued under the old role. Drop them so the
     // next sign-in picks the new one up.

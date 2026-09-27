@@ -23,6 +23,7 @@ const admin: PublicUser = {
   email: 'ada@example.com',
   role: Role.ADMIN,
   active: true,
+  deletedAt: null,
   createdAt: '2026-09-01T10:00:00.000Z',
   updatedAt: '2026-09-01T10:00:00.000Z',
 }
@@ -33,6 +34,7 @@ const agent: PublicUser = {
   email: 'bob@example.com',
   role: Role.AGENT,
   active: true,
+  deletedAt: null,
   createdAt: '2026-09-10T10:00:00.000Z',
   updatedAt: '2026-09-10T10:00:00.000Z',
 }
@@ -43,6 +45,7 @@ const former: PublicUser = {
   email: 'cy@example.com',
   role: Role.AGENT,
   active: false,
+  deletedAt: null,
   createdAt: '2026-08-20T10:00:00.000Z',
   updatedAt: '2026-09-15T10:00:00.000Z',
 }
@@ -53,8 +56,21 @@ const newAgent: PublicUser = {
   email: 'dana@example.com',
   role: Role.AGENT,
   active: true,
+  deletedAt: null,
   createdAt: '2026-09-20T10:00:00.000Z',
   updatedAt: '2026-09-20T10:00:00.000Z',
+}
+
+/** Soft-deleted: `deletedAt` set, and inactive with it - the two go together. */
+const deleted: PublicUser = {
+  id: 'user-deleted',
+  name: 'Eve Deleted',
+  email: 'eve@example.com',
+  role: Role.AGENT,
+  active: false,
+  deletedAt: '2026-09-25T10:00:00.000Z',
+  createdAt: '2026-08-01T10:00:00.000Z',
+  updatedAt: '2026-09-25T10:00:00.000Z',
 }
 
 function listResponse(
@@ -209,10 +225,12 @@ describe('UsersPage', () => {
 
   it('reads its filters from the URL and reflects them in the controls', async () => {
     mockedApiFetch.mockResolvedValue(listResponse([former], { total: 3, page: 2, pageSize: 2 }))
-    const page = renderPage('/users?q=cy&role=AGENT&active=false&page=2&pageSize=2')
+    const page = renderPage('/users?q=cy&role=AGENT&status=inactive&page=2&pageSize=2')
     await page.table()
 
-    expect(requestedPaths()).toEqual(['/api/users?q=cy&role=AGENT&active=false&page=2&pageSize=2'])
+    expect(requestedPaths()).toEqual([
+      '/api/users?q=cy&role=AGENT&status=inactive&page=2&pageSize=2',
+    ])
     expect(screen.getByLabelText('Search')).toHaveValue('cy')
     expect(screen.getByRole('combobox', { name: 'Role' })).toHaveTextContent('Agent')
     expect(screen.getByRole('combobox', { name: 'Status' })).toHaveTextContent('Inactive')
@@ -220,7 +238,7 @@ describe('UsersPage', () => {
 
   it('normalises URL values the server would refuse', async () => {
     mockedApiFetch.mockResolvedValue(listResponse([admin]))
-    const page = renderPage('/users?q=%20%20&role=OWNER&active=maybe&page=abc&pageSize=999')
+    const page = renderPage('/users?q=%20%20&role=OWNER&status=maybe&page=abc&pageSize=999')
     await page.table()
 
     // Blank search dropped, unknown role and status dropped, page defaulted,
@@ -276,10 +294,25 @@ describe('UsersPage', () => {
 
     await choose(user, 'Status', 'Inactive')
 
-    await waitFor(() => expect(page.search()).toBe('?active=false'))
+    await waitFor(() => expect(page.search()).toBe('?status=inactive'))
     await waitFor(() =>
-      expect(requestedPaths()).toContain('/api/users?active=false&page=1&pageSize=20'),
+      expect(requestedPaths()).toContain('/api/users?status=inactive&page=1&pageSize=20'),
     )
+  })
+
+  it('filters for deleted users through the select', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([deleted]))
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.table()
+
+    await choose(user, 'Status', 'Deleted')
+
+    await waitFor(() => expect(page.search()).toBe('?status=deleted'))
+    await waitFor(() =>
+      expect(requestedPaths()).toContain('/api/users?status=deleted&page=1&pageSize=20'),
+    )
+    expect(await screen.findByText('Eve Deleted')).toBeInTheDocument()
   })
 
   it('pages with Previous and Next, disabled at the ends', async () => {
@@ -435,6 +468,62 @@ describe('UsersPage', () => {
     expect(screen.getByRole('button', { name: 'Edit Ada Admin' })).toBeInTheDocument()
     // Deactivated users can still be edited.
     expect(screen.getByRole('button', { name: 'Edit Cy Former' })).toBeInTheDocument()
+  })
+
+  it('offers delete on agents but never on an admin', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([agent, admin, former]))
+    const page = renderPage()
+    await page.table()
+
+    expect(screen.getByRole('button', { name: 'Delete Bob Agent' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete Cy Former' })).toBeInTheDocument()
+    // The server refuses to delete an admin, so the page does not offer it -
+    // while still letting one be edited, which is how a demotion happens.
+    expect(screen.queryByRole('button', { name: 'Delete Ada Admin' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit Ada Admin' })).toBeInTheDocument()
+  })
+
+  it('shows a deleted user as Deleted rather than Inactive', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([former, deleted]))
+    const page = renderPage()
+
+    const [formerRow, deletedRow] = bodyRows(await page.table())
+    expect(within(formerRow!).getByText('Inactive')).toBeInTheDocument()
+    expect(within(deletedRow!).getByText('Deleted')).toBeInTheDocument()
+    expect(within(deletedRow!).queryByText('Inactive')).not.toBeInTheDocument()
+  })
+
+  it('deletes a user from its row, leaving the row in the list as Deleted', async () => {
+    // The list answers with the deleted row only once the DELETE has been made.
+    let removed = false
+    mockedApiFetch.mockImplementation(async (_path, options) => {
+      if (options?.method === 'DELETE') {
+        removed = true
+        return { user: { ...agent, active: false, deletedAt: '2026-09-27T10:00:00.000Z' } }
+      }
+      return listResponse([
+        removed ? { ...agent, active: false, deletedAt: '2026-09-27T10:00:00.000Z' } : agent,
+      ])
+    })
+    const user = userEvent.setup()
+    const page = renderPage()
+    expect(within(await page.table()).getByText('Active')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Delete Bob Agent' }))
+    await screen.findByRole('alertdialog', { name: 'Delete Bob Agent?' })
+    await user.click(screen.getByRole('button', { name: 'Delete user' }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    // Soft: the row is still there, now marked Deleted.
+    const rows = bodyRows(await page.table())
+    expect(rows).toHaveLength(1)
+    expect(within(rows[0]!).getByText('Bob Agent')).toBeInTheDocument()
+    expect(await screen.findByText('Deleted')).toBeInTheDocument()
+    expect(requestedPaths()).toEqual([
+      '/api/users?page=1&pageSize=20',
+      '/api/users/user-agent',
+      '/api/users?page=1&pageSize=20',
+    ])
   })
 
   it('opens the create dialog from the "Add user" button', async () => {

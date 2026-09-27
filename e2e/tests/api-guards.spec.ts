@@ -68,9 +68,10 @@ test.describe("API guards as the admin", () => {
       name: seededAdmin.name,
       role: Role.ADMIN,
       active: true,
+      deletedAt: null,
     });
     expect(Object.keys(user).sort()).toEqual(
-      ["active", "createdAt", "email", "id", "name", "role", "updatedAt"].sort(),
+      ["active", "createdAt", "deletedAt", "email", "id", "name", "role", "updatedAt"].sort(),
     );
   });
 
