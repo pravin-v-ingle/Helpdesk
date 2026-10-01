@@ -1,7 +1,6 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router'
-import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -12,6 +11,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { CreateUserDialog } from '../components/CreateUserDialog.tsx'
+import { Pagination } from '../components/Pagination.tsx'
 import { UsersTable, UsersTableSkeleton } from '../components/UsersTable.tsx'
 import { useAuth } from '../auth/auth-context.ts'
 import { ApiError, isRole, Role } from '../lib/api.ts'
@@ -243,7 +243,14 @@ export function UsersPage() {
             emptyText={filtered ? 'No users match your filters.' : 'No users yet.'}
           />
           {data.total > 0 && (
-            <Pagination data={data} fetching={fetching} onPageChange={(page) => updateFilters({ page: String(page) })} />
+            <Pagination
+              page={data.page}
+              pageSize={data.pageSize}
+              total={data.total}
+              count={data.users.length}
+              fetching={fetching}
+              onPageChange={(page) => updateFilters({ page: String(page) })}
+            />
           )}
         </>
       ) : (
@@ -252,49 +259,5 @@ export function UsersPage() {
         !query.isError && <UsersTableSkeleton />
       )}
     </main>
-  )
-}
-
-function Pagination({
-  data,
-  fetching,
-  onPageChange,
-}: {
-  data: UserListResponse
-  fetching: boolean
-  onPageChange: (page: number) => void
-}) {
-  const { page, pageSize, total, users } = data
-  const totalPages = totalPagesOf(data)
-  const from = (page - 1) * pageSize + 1
-  const to = from + users.length - 1
-
-  return (
-    <div className="mt-4 flex flex-wrap items-center justify-between gap-4 text-sm text-muted-foreground">
-      <p aria-live="polite">
-        Showing {from}–{to} of {total}
-      </p>
-      <div className="flex items-center gap-3">
-        <span>
-          Page {page} of {totalPages}
-        </span>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={fetching || page <= 1}
-          onClick={() => onPageChange(page - 1)}
-        >
-          Previous
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={fetching || page >= totalPages}
-          onClick={() => onPageChange(page + 1)}
-        >
-          Next
-        </Button>
-      </div>
-    </div>
   )
 }

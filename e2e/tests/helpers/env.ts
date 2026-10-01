@@ -50,3 +50,15 @@ export const ADMIN_STORAGE_STATE = path.resolve(
 
 /** A storage state with no cookies, for tests that must start anonymous. */
 export const ANONYMOUS_STORAGE_STATE: { cookies: []; origins: [] } = { cookies: [], origins: [] };
+
+/**
+ * The inbound email webhook's settings, read from the same file the API loads.
+ * The specs sign their own Mailgun-shaped payloads with this secret, so it has
+ * to be the exact string the API verifies against - which is why it is read
+ * here rather than written out a second time.
+ */
+export const inboundEmail = {
+  provider: required("INBOUND_EMAIL_PROVIDER"),
+  secret: required("INBOUND_EMAIL_SECRET"),
+  supportAddress: required("SUPPORT_EMAIL_ADDRESS"),
+} as const;

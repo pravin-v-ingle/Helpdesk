@@ -64,15 +64,16 @@ configuring it rather than by writing the code. The endpoint names are its own:
 
 Built against seeded data, before email exists.
 
-- [ ] 3.1 Add the `Ticket` model: status enum (`OPEN`, `RESOLVED`, `CLOSED`), category enum (`GENERAL_QUESTION`, `TECHNICAL_QUESTION`, `REFUND_REQUEST`), requester email and name, subject, timestamps.
-- [ ] 3.2 Add the `Message` model for the emails and replies on a ticket, with an inbound or outbound direction.
-- [ ] 3.3 Add indexes for the columns the list view filters and sorts on.
+- [x] 3.1 Add the `Ticket` model: status enum (`OPEN`, `RESOLVED`, `CLOSED`), category enum (`GENERAL_QUESTION`, `TECHNICAL_QUESTION`, `REFUND_REQUEST`), requester email and name, subject, timestamps.
+- [x] 3.2 Add the `Message` model for the emails and replies on a ticket, with an inbound or outbound direction.
+- [x] 3.3 Add indexes for the columns the list view filters and sorts on.
 - [ ] 3.4 Write a seed script that creates sample tickets and messages.
-- [ ] 3.5 Implement `GET /api/tickets` with pagination, filter by status and category, and sort by date.
+- [x] 3.5 Implement `GET /api/tickets` with pagination, filter by status and category, and sort by date.
 - [ ] 3.6 Implement `GET /api/tickets/:id` returning the ticket and its messages.
 - [ ] 3.7 Implement `PATCH /api/tickets/:id` to change status and category.
 - [ ] 3.8 Implement `POST /api/tickets/:id/messages` to add an agent reply (stored only for now).
-- [ ] 3.9 Build the ticket list page with a table, pagination, filters, and sorting.
+- [x] 3.9a Build the ticket list page: `/tickets` shows a paginated table with status and category filters, all of its state in the URL. Not admin-gated - working tickets is the agent's job.
+- [ ] 3.9b Add a sorting control to `/tickets`. `GET /api/tickets` has accepted `?sort=newest|oldest` since 3.5; no control sets it.
 - [ ] 3.10 Build the ticket detail page showing the message thread.
 - [ ] 3.11 Add status and category controls to the detail page.
 - [ ] 3.12 Add the reply composer to the detail page.
@@ -84,17 +85,31 @@ Built against seeded data, before email exists.
 
 ## Phase 4 - Email
 
+Tasks 4.3 to 4.11 are done, with two deliberate gaps. The webhook converts
+inline rather than queueing, so 4.2 and 4.5 are deferred together - and the seam
+they slot into is already there:
+
+| Deferred | Why it is safe to defer | The seam |
+|---|---|---|
+| 4.2 job queue and worker | Nothing in the inbound path makes an AI call yet; the classifier is Phase 5. | `RawEmail.processedAt IS NULL` is the query a worker claims from. |
+| 4.5 store, queue, return 200 | With no queue there is nothing to queue. The store still happens first. | A payload is written before conversion, so a failure leaves it recoverable and the provider's retry resumes from that row. |
+
+Also outstanding: 4.1 needs DNS and a provider account outside this repo -
+everything built here is exercised by `bun run email:test`, which signs a
+provider-shaped payload locally. Attachment *metadata* is stored; the bytes are
+dropped until there is a blob store to put them in.
+
 - [ ] 4.1 Configure the email provider account, sending domain, and inbound route.
 - [ ] 4.2 Add the job queue and a worker process.
-- [ ] 4.3 Add a `RawEmail` model that stores the incoming provider payload as received.
-- [ ] 4.4 Implement the inbound webhook endpoint with provider signature verification.
+- [x] 4.3 Add a `RawEmail` model that stores the incoming provider payload as received.
+- [x] 4.4 Implement the inbound webhook endpoint with provider signature verification. *(Mailgun: HMAC-SHA256 over `timestamp + token`, plus a 15-minute freshness window. SendGrid Inbound Parse has **no signature mechanism at all** - its signed webhook is the Event Webhook, a different product - so that adapter authenticates with HTTP Basic credentials embedded in the parse URL. This is why Mailgun is the default.)*
 - [ ] 4.5 Make the webhook store the payload, queue a job, and return 200 immediately.
-- [ ] 4.6 Skip payloads whose provider message ID has already been processed.
-- [ ] 4.7 Implement the parse job: extract sender, subject, body, and headers.
-- [ ] 4.8 Strip quoted replies and signatures from the message body.
-- [ ] 4.9 Create a ticket from a parsed email.
-- [ ] 4.10 Attach replies to the existing ticket by matching `In-Reply-To` and `References` against stored message IDs.
-- [ ] 4.11 Reopen a resolved ticket when the student replies to it.
+- [x] 4.6 Skip payloads whose provider message ID has already been processed.
+- [x] 4.7 Implement the parse job: extract sender, subject, body, and headers.
+- [x] 4.8 Strip quoted replies and signatures from the message body.
+- [x] 4.9 Create a ticket from a parsed email.
+- [x] 4.10 Attach replies to the existing ticket by matching `In-Reply-To` and `References` against stored message IDs.
+- [x] 4.11 Reopen a resolved **or closed** ticket when the student replies to it. *(Amended from "resolved": filing a reply under a closed ticket leaves it where no default view shows it, which is the failure this product exists to prevent.)*
 - [ ] 4.12 Implement the outbound send service.
 - [ ] 4.13 Set threading headers on outbound mail so student replies come back to the same ticket.
 - [ ] 4.14 Wire the reply composer to actually send the email.

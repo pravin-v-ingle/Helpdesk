@@ -10,8 +10,6 @@ datasource db {
   provider = "postgresql"
 }
 
-// Ticket and Message models are added in Phase 3 of implementation-plan.md.
-
 /// Who a user is allowed to be in the system. Admins manage other users;
 /// agents only work tickets. See project-scope.md.
 enum Role {
@@ -28,25 +26,27 @@ enum Role {
 // ---------------------------------------------------------------------------
 
 model User {
-  id            String    @id
-  name          String
-  email         String    @unique
-  emailVerified Boolean   @default(false)
-  image         String?
+  id              String    @id
+  name            String
+  email           String    @unique
+  emailVerified   Boolean   @default(false)
+  image           String?
   /// Application role. Server-owned: `input: false` in src/lib/auth.ts stops
   /// it being set through any Better Auth request body.
-  role          Role      @default(AGENT)
+  role            Role      @default(AGENT)
   /// Deactivated users keep their rows and their ticket history but cannot
   /// sign in. Deactivating also deletes their sessions.
-  active        Boolean   @default(true)
+  active          Boolean   @default(true)
   /// Set when an admin deletes the account. The row and its ticket history are
   /// kept. Always accompanied by `active: false`, which is what actually blocks
   /// sign-in; this field records that the removal was a deletion, and when.
-  deletedAt     DateTime?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  sessions      Session[]
-  accounts      Account[]
+  deletedAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  sessions        Session[]
+  accounts        Account[]
+  /// Tickets this agent is working. The back half of Ticket.assignedTo.
+  assignedTickets Ticket[]
 }
 
 /// One row per active login. Deleted on sign-out, which is what makes a
@@ -99,4 +99,164 @@ model Verification {
   updatedAt  DateTime @updatedAt
 
   @@index([identifier])
+}
+
+// ---------------------------------------------------------------------------
+// Tickets, their message threads, and the raw inbound email each one came from.
+//
+// These are the first application-owned tables. The Better Auth models above
+// take `id String @id` with no default because the library generates its own
+// ids; here the database does it, with an auto-incrementing integer. A ticket
+// number is something agents read out and type in, so it is short and ordered
+// on purpose. Follow this for the next app-owned model.
+// ---------------------------------------------------------------------------
+
+/// Where a ticket is in its lifecycle. Exactly one at a time - see
+/// project-scope.md.
+enum TicketStatus {
+  OPEN
+  RESOLVED
+  CLOSED
+}
+
+/// What a ticket is about. Assigned by the AI classifier in Phase 5 and
+/// editable by an agent; until then a ticket has none, which is why the column
+/// is nullable with no default. "Uncategorised" is a real state, not a
+/// placeholder value pretending to be a category.
+enum TicketCategory {
+  GENERAL_QUESTION
+  TECHNICAL_QUESTION
+  REFUND_REQUEST
+}
+
+/// Which way a message travelled: INBOUND from the student, OUTBOUND from an
+/// agent.
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+/// The email provider a payload arrived through. An enum rather than a string
+/// so the adapter registry is exhaustive: adding a member is a compile error
+/// until an adapter exists for it.
+enum EmailProvider {
+  MAILGUN
+  SENDGRID
+}
+
+/// One support request. Created by the first inbound email that does not
+/// thread onto an existing ticket.
+model Ticket {
+  id             Int             @id @default(autoincrement())
+  /// Never empty - the parser substitutes "(no subject)" for mail that has no
+  /// Subject header, so no view has to render a null.
+  subject        String
+  /// The request itself, as plain text: the opening message's body, quoted
+  /// reply and signature already stripped. Denormalised from the first
+  /// `Message` so a list or a summary can show the gist without joining the
+  /// thread. Required, so no view handles a null; the `""` default exists only
+  /// so this column could be added to rows that predate it, and the ingest
+  /// path always writes the real body.
+  body           String          @default("")
+  /// UNTRUSTED sender-supplied markup, on the same terms as `Message.bodyHtml`:
+  /// never render it without sanitising, and never with dangerouslySetInnerHTML.
+  /// Required, but plenty of mail is plain text only, so `""` - meaning "this
+  /// request had no HTML part" - is a normal value here rather than a gap.
+  bodyHtml       String          @default("")
+  status         TicketStatus    @default(OPEN)
+  /// Null until the Phase 5 classifier assigns one. No default: an unclassified
+  /// ticket must be distinguishable from one the model genuinely called a
+  /// general question.
+  category       TicketCategory?
+  requesterEmail String
+  /// Required. Most mail carries a display name; when the From header has none
+  /// the parser derives one from the address's local part, so this column is
+  /// always populated and every view can name the person.
+  requesterName  String
+  /// The agent whose job this ticket is, or null for the unassigned queue -
+  /// where every ticket starts, since inbound mail names no one to give it to. `String?` because `User.id` is a string: Better Auth
+  /// generates those ids, unlike the app-owned integer above.
+  assignedToId   String?
+  /// `SetNull` is a safety net rather than a path anyone takes: users are
+  /// soft-deleted precisely so a ticket can still name who handled it, so no
+  /// row is ever removed from under this reference.
+  assignedTo     User?           @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
+  /// When the newest message on this ticket arrived. The list view's sort key,
+  /// kept denormalised so ordering a page does not join the thread.
+  lastMessageAt  DateTime        @default(now())
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  messages       Message[]
+  rawEmails      RawEmail[]
+
+  /// The list view filters then sorts, so the filter column leads each index.
+  @@index([status, lastMessageAt])
+  @@index([category, lastMessageAt])
+  @@index([lastMessageAt])
+  @@index([requesterEmail])
+  @@index([assignedToId])
+}
+
+/// One email on a ticket, in either direction.
+model Message {
+  id           Int              @id @default(autoincrement())
+  ticketId     Int
+  ticket       Ticket           @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  direction    MessageDirection
+  fromEmail    String
+  /// Required, on the same terms as Ticket.requesterName.
+  fromName     String
+  /// Plain text with the quoted reply and signature already stripped. What the
+  /// agent reads and what Phase 5 sends to Claude.
+  body         String
+  /// UNTRUSTED sender-supplied markup. Never render it without sanitising -
+  /// no dangerouslySetInnerHTML on this field.
+  bodyHtml     String?
+  /// The RFC 5322 Message-ID, angle brackets stripped. Unique because this is
+  /// what a reply's In-Reply-To points at; the index is what makes threading a
+  /// lookup. Null for a message that has none. Phase 4.13 generates one for
+  /// every outbound message so student replies come back here.
+  rfcMessageId String?          @unique
+  inReplyTo    String?
+  /// The References header verbatim, space-separated, kept for the threading
+  /// walk rather than normalised into rows.
+  references   String?
+  /// When we received it, not the Date: header - a sender's clock is not
+  /// evidence.
+  createdAt    DateTime         @default(now())
+
+  @@index([ticketId, createdAt])
+}
+
+/// The inbound provider payload, stored before anything is made of it, so a
+/// parse or conversion failure leaves the mail recoverable rather than lost.
+model RawEmail {
+  id               Int           @id @default(autoincrement())
+  provider         EmailProvider
+  /// The RFC Message-ID when the mail has one, otherwise a fingerprint of the
+  /// parsed fields. Unique per provider: this is what makes a webhook retry a
+  /// no-op instead of a second ticket.
+  dedupeKey        String
+  /// The non-file form fields as received, plus metadata for each attachment.
+  /// Attachment *contents* are dropped - a deliberate narrowing of Phase 4.3's
+  /// "as received", until there is somewhere to put them.
+  payload          Json
+  receivedAt       DateTime      @default(now())
+  /// Null means stored but not yet turned into a ticket - either mid-flight, or
+  /// failed with `error` set. `processedAt IS NULL` is the query a background
+  /// worker will claim from when Phase 4.2 lands.
+  processedAt      DateTime?
+  /// Why conversion did not happen: an auto-reply that was dropped on purpose,
+  /// a payload with no usable sender, or an unexpected failure.
+  error            String?
+  ticketId         Int?
+  ticket           Ticket?       @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+  /// The message this payload produced. A plain column rather than a relation:
+  /// a Message already reaches its ticket, and a second relation back would buy
+  /// nothing but a cascade to reason about.
+  createdMessageId Int?
+
+  @@unique([provider, dedupeKey])
+  @@index([ticketId])
+  @@index([processedAt])
 }

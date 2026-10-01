@@ -6,6 +6,18 @@ import { cn } from '@/lib/utils'
 import { useAuth } from '../auth/auth-context.ts'
 import { Role } from '../lib/api.ts'
 
+/**
+ * The shared style for a nav link beside the wordmark. Hoisted out of the links
+ * themselves now that there is more than one of them, so the active and
+ * inactive states cannot drift apart.
+ */
+function navLinkClass({ isActive }: { isActive: boolean }) {
+  return cn(
+    'text-sm transition-colors hover:text-foreground',
+    isActive ? 'font-medium text-foreground' : 'text-muted-foreground',
+  )
+}
+
 export function NavBar() {
   const auth = useAuth()
   const [signingOut, setSigningOut] = useState(false)
@@ -28,16 +40,13 @@ export function NavBar() {
         <NavLink to="/" className="text-lg font-semibold tracking-tight">
           Helpdesk
         </NavLink>
+        {/* Unconditional: every signed-in user works tickets, so this link sits
+            outside the admin-only wrapper below. */}
+        <NavLink to="/tickets" className={navLinkClass}>
+          Tickets
+        </NavLink>
         {user?.role === Role.ADMIN && (
-          <NavLink
-            to="/users"
-            className={({ isActive }) =>
-              cn(
-                'text-sm transition-colors hover:text-foreground',
-                isActive ? 'font-medium text-foreground' : 'text-muted-foreground',
-              )
-            }
-          >
+          <NavLink to="/users" className={navLinkClass}>
             Users
           </NavLink>
         )}

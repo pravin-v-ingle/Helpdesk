@@ -1,6 +1,7 @@
 import { Prisma, Role } from "../generated/prisma/client.ts";
 import { prisma } from "../lib/prisma.ts";
 import { createUserWithPassword, setUserPassword } from "../lib/auth-accounts.ts";
+import { serializable } from "../lib/transaction.ts";
 import { HttpError } from "../middleware/error-handler.ts";
 
 /** The user shape the API returns. Never widen this to `include` credentials. */
@@ -276,40 +277,5 @@ async function assertNotLastActiveAdmin(tx: Prisma.TransactionClient, id: string
 
   if (otherActiveAdmins === 0) {
     throw new HttpError(400, "The last active admin cannot be removed");
-  }
-}
-
-/**
- * Postgres refused to commit because a concurrent transaction got there first
- * (SQLSTATE 40001). Prisma reports it two ways: as `P2034` on the classic
- * path, and through the driver adapter as a `DriverAdapterError` whose cause
- * is `TransactionWriteConflict` - the form `@prisma/adapter-pg` produces
- * almost every time.
- */
-function isSerializationFailure(err: unknown): boolean {
-  if (err instanceof Prisma.PrismaClientKnownRequestError) return err.code === "P2034";
-  if (err instanceof Error && err.name === "DriverAdapterError") {
-    const cause = err.cause as { kind?: string } | undefined;
-    return cause?.kind === "TransactionWriteConflict";
-  }
-  return false;
-}
-
-const SERIALIZABLE_ATTEMPTS = 3;
-
-/**
- * Runs `fn` in a serializable transaction, so a check it makes (an admin
- * count, say) still holds when its write commits. Postgres aborts one side
- * of a conflict rather than letting both through; that side is retried.
- */
-async function serializable<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await prisma.$transaction(fn, {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      });
-    } catch (err) {
-      if (!isSerializationFailure(err) || attempt >= SERIALIZABLE_ATTEMPTS) throw err;
-    }
   }
 }

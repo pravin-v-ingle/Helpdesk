@@ -2,8 +2,10 @@ import express from "express";
 import { toNodeHandler } from "better-auth/node";
 import { env } from "./env.ts";
 import { auth, CLIENT_IP_HEADER } from "./lib/auth.ts";
+import { inboundEmailRouter } from "./routes/email.ts";
 import { healthRouter } from "./routes/health.ts";
 import { meRouter } from "./routes/me.ts";
+import { ticketsRouter } from "./routes/tickets.ts";
 import { usersRouter } from "./routes/users.ts";
 import { blockPublicSignUp } from "./middleware/block-public-sign-up.ts";
 import { errorHandler, notFound } from "./middleware/error-handler.ts";
@@ -35,11 +37,18 @@ export function createApp() {
   // wildcard syntax; a bare `*` no longer matches.
   app.all("/api/auth/*splat", toNodeHandler(auth));
 
+  // Also before express.json(), and for the same reason: the inbound email
+  // webhook is posted as multipart/form-data, and the provider's signature is
+  // checked against the bytes as they arrived. The router applies its own
+  // `express.raw()` with a size limit, so nothing else in the app is affected.
+  app.use("/api/email", inboundEmailRouter);
+
   app.use(express.json());
 
   // Routes
   app.use("/api/health", healthRouter);
   app.use("/api/me", meRouter);
+  app.use("/api/tickets", ticketsRouter);
   app.use("/api/users", usersRouter);
 
   // 404 for anything unmatched, then the central error handler last.

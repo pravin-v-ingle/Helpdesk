@@ -119,6 +119,60 @@ function betterAuthUrl(): string {
   return url;
 }
 
+/**
+ * Which provider's wire format the inbound webhook expects, and therefore
+ * which adapter verifies the signature. Getting this wrong rejects every
+ * inbound email with a 401, because the other provider's signature scheme
+ * does not verify.
+ */
+const INBOUND_EMAIL_PROVIDERS = ["mailgun", "sendgrid"] as const;
+
+export type InboundEmailProviderName = (typeof INBOUND_EMAIL_PROVIDERS)[number];
+
+function inboundEmailProvider(): InboundEmailProviderName {
+  const raw = process.env.INBOUND_EMAIL_PROVIDER;
+  if (raw === undefined) return "mailgun";
+
+  const name = raw.trim().toLowerCase();
+  if (!INBOUND_EMAIL_PROVIDERS.includes(name as InboundEmailProviderName)) {
+    console.error(
+      `Environment variable INBOUND_EMAIL_PROVIDER must be one of ` +
+        `${INBOUND_EMAIL_PROVIDERS.join(", ")}, got: ${raw}`,
+    );
+    process.exit(1);
+  }
+  return name as InboundEmailProviderName;
+}
+
+const DEV_INBOUND_EMAIL_SECRET = "dev-inbound-email-secret-not-for-production";
+const MIN_INBOUND_EMAIL_SECRET_LENGTH = 32;
+
+/**
+ * The shared secret the inbound webhook authenticates with. What it means is
+ * the chosen provider's business: Mailgun's HTTP webhook signing key, or the
+ * password SendGrid sends as HTTP Basic credentials in the Inbound Parse URL.
+ * Either way it is the *only* thing standing between the internet and ticket
+ * creation, so a production deployment must set a real one - a wrong or absent
+ * value there would either reject all mail or, worse, accept anyone's.
+ *
+ * Outside production it falls back to a fixed development value, the same
+ * precedent `betterAuthUrl` follows: `bun run dev` keeps working on an
+ * existing `.env`, and `bun run email:test` signs its payloads with no setup.
+ */
+function inboundEmailSecret(): string {
+  if (!isProductionEnv) return process.env.INBOUND_EMAIL_SECRET ?? DEV_INBOUND_EMAIL_SECRET;
+
+  const secret = required("INBOUND_EMAIL_SECRET");
+  if (secret.length < MIN_INBOUND_EMAIL_SECRET_LENGTH) {
+    console.error(
+      `Environment variable INBOUND_EMAIL_SECRET must be at least ` +
+        `${MIN_INBOUND_EMAIL_SECRET_LENGTH} characters in production.`,
+    );
+    process.exit(1);
+  }
+  return secret;
+}
+
 export const env = {
   nodeEnv,
   port,
@@ -158,6 +212,20 @@ export const env = {
     name: process.env.SEED_ADMIN_NAME,
     password: process.env.SEED_ADMIN_PASSWORD,
   },
+  /** Inbound email: which provider posts to the webhook, and how it proves it. */
+  inboundEmail: {
+    provider: inboundEmailProvider(),
+    secret: inboundEmailSecret(),
+  },
+  /**
+   * The support mailbox mail arrives at, lowercased. Optional: nothing breaks
+   * without it, but two things get less precise. Mail addressed to several
+   * recipients is matched against it to pick the one that is ours, so
+   * `requesterEmail` is never set from our own address; and a message whose
+   * sender is this address is treated as an auto-reply, which is what stops a
+   * mail loop once outbound send lands in 4.12.
+   */
+  supportEmailAddress: process.env.SUPPORT_EMAIL_ADDRESS?.trim().toLowerCase() || undefined,
 } as const;
 
 export const isProduction = isProductionEnv;

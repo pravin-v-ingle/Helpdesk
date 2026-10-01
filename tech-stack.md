@@ -11,7 +11,7 @@ Technology decisions for the AI-powered ticket management system. See `project-s
 | Database   | PostgreSQL                                     |
 | ORM        | Prisma                                         |
 | AI         | Claude API (Anthropic)                         |Create
-| Email      | SendGrid or Mailgun (inbound + outbound)       |
+| Email      | Mailgun by default, SendGrid adapter alongside  |
 | Auth       | Database-backed sessions                       |
 | Deployment | Docker containers on a cloud provider          |
 | Testing    | Vitest + React Testing Library (client), Playwright end-to-end |
@@ -165,19 +165,54 @@ Still outstanding: a scheduled task to delete expired sessions.
 
 ## Email
 
-**SendGrid or Mailgun** - decision pending (see Open decisions). Both provide the two pieces needed:
+**An adapter per provider, with Mailgun the default.** The decision was not
+"SendGrid or Mailgun" in the end: the two differ enough at the inbound edge that
+an internal shape plus one adapter each costs little and removes the lock-in.
+`INBOUND_EMAIL_PROVIDER` chooses which adapter runs, `INBOUND_EMAIL_SECRET` is
+the one credential it needs, and nothing outside `server/src/lib/email/` names a
+vendor.
 
-- **Inbound**: existing support mailboxes forward to a single provider address. The provider parses the MIME and POSTs JSON to a backend webhook. This works regardless of what platform the original mailboxes run on.
-- **Outbound**: transactional send for replies and notifications.
+Mailgun is the default for one concrete reason: **SendGrid Inbound Parse has no
+signature mechanism at all.** SendGrid does sign its Event Webhook, but that is
+delivery and engagement events for mail you sent, a different product that does
+not carry inbound mail. The only authentication Inbound Parse offers is a secret
+embedded in the parse URL, so the SendGrid adapter authenticates with a
+constant-time comparison of HTTP Basic credentials. That is a bearer token on
+every request rather than a per-payload signature, which is weaker in the
+ordinary ways - anything logging URLs or `Authorization` headers leaks it, and
+there is no replay window. Mailgun signs `timestamp + token` with HMAC-SHA256,
+which the adapter verifies along with a 15-minute freshness window.
 
-Requirements either way:
+- **Inbound**: existing support mailboxes forward to a single provider address.
+  The provider parses the MIME and POSTs a form body to `POST
+  /api/email/inbound`. This works regardless of what platform the original
+  mailboxes run on. No new dependency decodes it: Bun's `FormData` handles both
+  `multipart/form-data` and `application/x-www-form-urlencoded`.
+- **Outbound**: transactional send for replies and notifications. Not built yet.
 
-- Webhook signature verification on every inbound request.
-- **Idempotency** on the provider's message ID - webhooks are retried, and without this you get duplicate tickets.
-- The webhook handler only validates, stores the raw email, queues the work, and returns 200. All parsing and AI work happens in the background.
-- **Threading**: store `Message-ID`, and set `In-Reply-To` and `References` on outbound mail so student replies attach to the existing ticket rather than opening a new one.
-- Strip quoted text and signatures before sending content to Claude - unstripped threads noticeably degrade classification and summaries.
-- SPF, DKIM and DMARC configured for the sending domain.
+What is in place:
+
+- Webhook signature verification on every inbound request, and the raw body kept
+  unparsed so the signature is checked against the bytes that arrived.
+- **Idempotency** on the provider's message ID - webhooks are retried, and
+  without this you get duplicate tickets. Mail with no `Message-ID` falls back to
+  a SHA-256 fingerprint of the *parsed* fields; fingerprinting the raw body would
+  dedupe nothing, because the multipart boundary is regenerated per request.
+- **Threading**: `Message-ID`, `In-Reply-To` and `References` are stored on every
+  message, and a reply matching one reattaches to its ticket rather than opening
+  a new one. A `RESOLVED` or `CLOSED` ticket reopens when the student replies.
+- Quoted text and signatures are stripped before storage, so neither the agent
+  nor Claude reads a thread back to itself. Mailgun's own `stripped-text` is
+  preferred where it exists; the local heuristics are the fallback.
+- **Loop and auto-reply suppression**: out-of-office markers, `Precedence: bulk`,
+  bounces with an empty `Return-Path`, and mail from our own support address are
+  stored but not converted. Without this, one autoresponder is an unbounded
+  ticket source - and a mail loop the moment outbound send exists.
+- Setting `?sort=`, filters and paging on the read side; see `GET /api/tickets`.
+
+Still to do: SPF, DKIM and DMARC for the sending domain, the provider account and
+a real inbound route, attachment storage (metadata is kept, bytes are dropped),
+and everything outbound.
 
 ## Background processing
 
@@ -185,6 +220,17 @@ Inbound email processing cannot happen inside the webhook request - AI calls tak
 
 - Queued work: parse email, classify, summarise, draft reply, send outbound, expire sessions, nightly cleanup.
 - Every unit of work is idempotent and has bounded retries with backoff. Permanently failed work is retained for inspection rather than silently dropped.
+
+**The queue is still an open decision, and inbound email runs inline without
+it.** The webhook parses and converts in the request, which it can afford to
+because there is no AI call in that path yet - the classifier is Phase 5. What
+makes this a staging post rather than a shortcut is where the seam was left:
+every payload is stored as a `RawEmail` *before* conversion, and
+`processedAt IS NULL` is exactly the query a worker will claim from. A
+conversion that fails leaves the payload with `processedAt` null and an `error`
+set, so the provider's retry resumes from the stored row instead of starting a
+second ticket. When the queue arrives, the webhook stops at the store and the
+worker picks up the same rows.
 
 ## Deployment
 
@@ -236,10 +282,9 @@ Inbound email processing cannot happen inside the webhook request - AI calls tak
 
 ## Open decisions
 
-- **SendGrid vs Mailgun** - compare inbound parse behaviour, deliverability, and pricing at expected volume.
 - **Cloud provider and region** - blocked on the data-residency and PII policy question.
 - **Whether student personal data may be sent to a third-party LLM API** - must be answered before build starts, as it may require a redaction layer between email parsing and the Claude calls.
 - **Password hashing algorithm** - required by the login flow above.
-- **Job queue library** - required by background processing above.
+- **Job queue library** - required by background processing above. Inbound email runs inline until it is chosen; see Background processing for the seam.
 - **Validation library** - required at the API boundary.
 - **Unit test runner and CI** - Playwright covers end-to-end (see Testing); a unit test runner and a CI pipeline are not yet chosen.
