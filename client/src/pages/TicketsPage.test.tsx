@@ -209,6 +209,27 @@ describe('TicketsPage', () => {
     )
   })
 
+  /**
+   * Ordering is the server's job - `GET /api/tickets` defaults to `sort=newest`
+   * and orders by `lastMessageAt` - so the page must be a pass-through. This
+   * guards against anyone adding client-side re-sorting later.
+   *
+   * The rows are handed over sorted by nothing - middle, newest, oldest - and
+   * that scrambling is the entire point: the three fixtures above happen to be
+   * declared in descending `lastMessageAt` order, so every other test in this
+   * file would still pass against a page that re-sorted them itself.
+   */
+  it('renders rows in the order the server returned them', async () => {
+    const scrambled = [resolved, unclassified, closed]
+    mockedApiFetch.mockResolvedValue(listResponse(scrambled))
+    const page = renderPage()
+
+    const subjects = bodyRows(await page.table()).map(
+      (row) => within(row).getAllByRole('cell')[0]?.textContent,
+    )
+    expect(subjects).toEqual(scrambled.map((ticket) => ticket.subject))
+  })
+
   it('reads its filters from the URL and reflects them in the controls', async () => {
     mockedApiFetch.mockResolvedValue(listResponse([resolved], { total: 3, page: 2, pageSize: 2 }))
     const page = renderPage('/tickets?status=RESOLVED&category=REFUND_REQUEST&page=2&pageSize=2')

@@ -99,6 +99,18 @@ export function ticketRow(page: Page, subject: string): Locator {
 }
 
 /**
+ * Every body row's subject, in the order the table renders them. Scoped to
+ * `tbody` so the header row is not one of them, and read through `ticketCells`
+ * so it follows the same first-cell-is-the-subject rule as `ticketRow`.
+ */
+export async function ticketSubjectsInOrder(page: Page): Promise<string[]> {
+  const rows = await ticketsTable(page).locator("tbody").getByRole("row").all();
+  return Promise.all(
+    rows.map(async (row) => ((await ticketCells(row).subject.textContent()) ?? "").trim()),
+  );
+}
+
+/**
  * The cells of a ticket row, in the table's column order. `Messages` is read
  * as its own locator rather than by text, so a count of `1` cannot be satisfied
  * by a `1` elsewhere in the row.
