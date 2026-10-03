@@ -17,13 +17,16 @@ import {
   TICKET_STATUS_LABELS,
 } from '../components/TicketsTable.tsx'
 import { ApiError } from '../lib/api.ts'
+import { isSortDir, SortDir, type Sort } from '../lib/sorting.ts'
 import {
   isCategoryFilter,
+  isTicketSortBy,
   isTicketStatus,
   ticketListQueryOptions,
   type CategoryFilter,
   type TicketListParams,
   type TicketListResponse,
+  type TicketSortBy,
 } from '../lib/tickets.ts'
 
 // The server's defaults and limits (server/src/routes/tickets.ts). The URL is
@@ -31,14 +34,18 @@ import {
 // refuse with a 400.
 const DEFAULT_PAGE_SIZE = 20
 const MAX_PAGE_SIZE = 100
+const DEFAULT_SORT_BY: TicketSortBy = 'lastMessageAt'
+const DEFAULT_SORT_DIR: SortDir = SortDir.desc
 
 const NETWORK_ERROR = 'Could not reach the server. Please try again.'
 
 type Filters = Required<Pick<TicketListParams, 'page' | 'pageSize'>> &
-  Pick<TicketListParams, 'status' | 'category'>
+  Pick<TicketListParams, 'status' | 'category' | 'sortBy' | 'sortDir'>
 
 /** Every filter key stored in the URL. `pageSize` is URL-only: no control sets it. */
-type FilterPatch = Partial<Record<'status' | 'category' | 'page', string | undefined>>
+type FilterPatch = Partial<
+  Record<'status' | 'category' | 'sortBy' | 'sortDir' | 'page', string | undefined>
+>
 
 /**
  * The Category select's options, in the order they are offered. `none` comes
@@ -59,12 +66,34 @@ function readFilters(params: URLSearchParams): Filters {
   const status = params.get('status')
   const category = params.get('category')
 
+  // Key order is load-bearing: `listTickets` iterates `Object.entries`, so the
+  // order these are declared in is the order they appear in the request path.
+  // Filters, then ordering, then paging - which reads like the SQL.
   return {
     status: isTicketStatus(status) ? status : undefined,
     category: isCategoryFilter(category) ? category : undefined,
+    ...readSort(params.get('sortBy'), params.get('sortDir')),
     page: readPositiveInt(params.get('page')) ?? 1,
     pageSize: Math.min(readPositiveInt(params.get('pageSize')) ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE),
   }
+}
+
+/**
+ * The sort pair, or neither. A `sortDir` with no valid `sortBy` is dropped
+ * because it names no column, and the default pair is normalised back to
+ * absent whether it arrived spelled out or not - so the default is stored one
+ * way only, and the request path for a default sort carries no sort at all.
+ */
+function readSort(
+  by: string | null,
+  dir: string | null,
+): Pick<TicketListParams, 'sortBy' | 'sortDir'> {
+  if (!isTicketSortBy(by)) return { sortBy: undefined, sortDir: undefined }
+  const sortDir = isSortDir(dir) ? dir : DEFAULT_SORT_DIR
+  if (by === DEFAULT_SORT_BY && sortDir === DEFAULT_SORT_DIR) {
+    return { sortBy: undefined, sortDir: undefined }
+  }
+  return { sortBy: by, sortDir }
 }
 
 function readPositiveInt(value: string | null): number | undefined {
@@ -84,8 +113,12 @@ function totalPagesOf({ total, pageSize }: TicketListResponse): number {
  * Not admin-gated - working tickets is the agent's job - so this sits outside
  * the `RequireRole` branch of the route table.
  *
- * No search box: there is no `?q=` on `GET /api/tickets` yet, and no sort
- * control, though the endpoint accepts `?sort=` (task 3.9b).
+ * Sorting is server-side: every column header is a control, the chosen column
+ * and direction live in the URL as `sortBy`/`sortDir`, and the database orders
+ * the whole result set so paging stays correct. The default pair is never
+ * written to the URL or sent to the API.
+ *
+ * No search box: there is no `?q=` on `GET /api/tickets` yet.
  */
 export function TicketsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -122,7 +155,13 @@ export function TicketsPage() {
           }
           // A changed filter restarts at page 1, and page 1 is stored as absent
           // so the plain `/tickets` URL and "page 1 of the same" are one entry.
-          if ('status' in patch || 'category' in patch) next.delete('page')
+          // Re-ordering makes the current page number meaningless, so a sort
+          // change restarts at page 1 too. Both sort keys are listed even
+          // though they are always written together, so the condition does not
+          // quietly depend on that.
+          if ('status' in patch || 'category' in patch || 'sortBy' in patch || 'sortDir' in patch) {
+            next.delete('page')
+          }
           if (next.get('page') === '1') next.delete('page')
           return next
         },
@@ -142,7 +181,19 @@ export function TicketsPage() {
     }
   }, [data, updateFilters])
 
+  // Sorting is deliberately not part of this: a sort is not a filter, and
+  // including one would show "No tickets match your filters." on an
+  // unfiltered, merely-sorted empty queue.
   const filtered = filters.status !== undefined || filters.category !== undefined
+
+  // The effective sort, with the default resolved - which is what makes Last
+  // message read as descending on a bare `/tickets`, where the URL says
+  // nothing. Writing it back stores the default as absent: the handler sends
+  // `undefined` for both keys and `updateFilters` deletes them.
+  const sortBy = filters.sortBy ?? DEFAULT_SORT_BY
+  const sortDir = filters.sortDir ?? DEFAULT_SORT_DIR
+  const onSortChange = (next: Sort<TicketSortBy> | undefined) =>
+    updateFilters({ sortBy: next?.sortBy, sortDir: next?.sortDir })
 
   return (
     <main className="flex-1 px-6 py-8">
@@ -208,6 +259,9 @@ export function TicketsPage() {
         <>
           <TicketsTable
             tickets={data.tickets}
+            sortBy={sortBy}
+            sortDir={sortDir}
+            onSortChange={onSortChange}
             fetching={fetching}
             emptyText={filtered ? 'No tickets match your filters.' : 'No tickets yet.'}
           />

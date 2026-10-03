@@ -15,10 +15,13 @@ import { Pagination } from '../components/Pagination.tsx'
 import { UsersTable, UsersTableSkeleton } from '../components/UsersTable.tsx'
 import { useAuth } from '../auth/auth-context.ts'
 import { ApiError, isRole, Role } from '../lib/api.ts'
+import { isSortDir, SortDir, type Sort } from '../lib/sorting.ts'
 import {
+  isUserSortBy,
   userListQueryOptions,
   type UserListParams,
   type UserListResponse,
+  type UserSortBy,
   type UserStatus,
 } from '../lib/users.ts'
 
@@ -29,14 +32,21 @@ const DEFAULT_PAGE_SIZE = 20
 const MAX_PAGE_SIZE = 100
 const MAX_QUERY_LENGTH = 100
 const SEARCH_DEBOUNCE_MS = 300
+// Only a direction, unlike the ticket queue's pair: the users list's default
+// order is a composite of `active` and `createdAt` that no column names, so
+// there is no `DEFAULT_SORT_BY` to declare. The direction is what a column
+// with no direction of its own falls back to.
+const DEFAULT_SORT_DIR: SortDir = SortDir.desc
 
 const NETWORK_ERROR = 'Could not reach the server. Please try again.'
 
 type Filters = Required<Pick<UserListParams, 'page' | 'pageSize'>> &
-  Pick<UserListParams, 'q' | 'role' | 'status'>
+  Pick<UserListParams, 'q' | 'role' | 'status' | 'sortBy' | 'sortDir'>
 
 /** Every filter key stored in the URL. `pageSize` is URL-only: no control sets it. */
-type FilterPatch = Partial<Record<'q' | 'role' | 'status' | 'page', string | undefined>>
+type FilterPatch = Partial<
+  Record<'q' | 'role' | 'status' | 'sortBy' | 'sortDir' | 'page', string | undefined>
+>
 
 /**
  * The Status select's options, in the order they are offered, and what
@@ -62,13 +72,28 @@ function readFilters(params: URLSearchParams): Filters {
   const role = params.get('role')
   const status = params.get('status')
 
+  // Key order is load-bearing: `listUsers` iterates `Object.entries`, so the
+  // order these are declared in is the order they appear in the request path.
+  // Filters, then ordering, then paging - which reads like the SQL.
   return {
     q: q ? q : undefined,
     role: isRole(role) ? role : undefined,
     status: isUserStatus(status) ? status : undefined,
+    ...readSort(params.get('sortBy'), params.get('sortDir')),
     page: readPositiveInt(params.get('page')) ?? 1,
     pageSize: Math.min(readPositiveInt(params.get('pageSize')) ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE),
   }
+}
+
+/**
+ * The sort pair, or neither. A `sortDir` with no valid `sortBy` is dropped
+ * because it names no column. There is no default pair to normalise away here,
+ * unlike the ticket queue: every member of `UserSortBy` names a real column
+ * sort, and none of them is the default.
+ */
+function readSort(by: string | null, dir: string | null): Pick<UserListParams, 'sortBy' | 'sortDir'> {
+  if (!isUserSortBy(by)) return { sortBy: undefined, sortDir: undefined }
+  return { sortBy: by, sortDir: isSortDir(dir) ? dir : DEFAULT_SORT_DIR }
 }
 
 function readPositiveInt(value: string | null): number | undefined {
@@ -85,6 +110,13 @@ function totalPagesOf({ total, pageSize }: UserListResponse): number {
  * Admin user management: the list, searchable, filterable and paginated, and
  * the create form (`CreateUserDialog`). The page owns the URL state and the
  * query; `UsersTable` renders the rows and owns their edit and delete dialogs.
+ *
+ * Sorting is server-side: every column header but Actions is a control, the
+ * chosen column and direction live in the URL as `sortBy`/`sortDir`, and the
+ * database orders the whole result set so paging stays correct. With neither
+ * in the URL the server applies its composite default - active accounts first,
+ * then newest - which no single column describes, so no header shows as
+ * sorted. That is honest rather than a gap.
  */
 export function UsersPage() {
   const auth = useAuth()
@@ -122,7 +154,19 @@ export function UsersPage() {
           }
           // A changed filter restarts at page 1, and page 1 is stored as absent
           // so the plain `/users` URL and "page 1 of the same" are one entry.
-          if ('q' in patch || 'role' in patch || 'status' in patch) next.delete('page')
+          // Re-ordering makes the current page number meaningless, so a sort
+          // change restarts at page 1 too. Both sort keys are listed even
+          // though they are always written together, so the condition does not
+          // quietly depend on that.
+          if (
+            'q' in patch ||
+            'role' in patch ||
+            'status' in patch ||
+            'sortBy' in patch ||
+            'sortDir' in patch
+          ) {
+            next.delete('page')
+          }
           if (next.get('page') === '1') next.delete('page')
           return next
         },
@@ -165,8 +209,20 @@ export function UsersPage() {
   }, [data, updateFilters])
 
   const currentUserId = auth.status === 'authenticated' ? auth.user.id : undefined
+  // Sorting is deliberately not part of this: a sort is not a filter, and
+  // including one would show "No users match your filters." on an unfiltered,
+  // merely-sorted empty list.
   const filtered =
     filters.q !== undefined || filters.role !== undefined || filters.status !== undefined
+
+  // No default to resolve, unlike the ticket queue: `undefined` reaches the
+  // table as "no column is sorted", which is what the composite default means.
+  const sort =
+    filters.sortBy === undefined
+      ? undefined
+      : { sortBy: filters.sortBy, sortDir: filters.sortDir ?? DEFAULT_SORT_DIR }
+  const onSortChange = (next: Sort<UserSortBy> | undefined) =>
+    updateFilters({ sortBy: next?.sortBy, sortDir: next?.sortDir })
 
   return (
     <main className="flex-1 px-6 py-8">
@@ -239,6 +295,8 @@ export function UsersPage() {
           <UsersTable
             users={data.users}
             currentUserId={currentUserId}
+            sort={sort}
+            onSortChange={onSortChange}
             fetching={fetching}
             emptyText={filtered ? 'No users match your filters.' : 'No users yet.'}
           />

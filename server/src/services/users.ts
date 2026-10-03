@@ -25,11 +25,30 @@ export type PublicUser = Prisma.UserGetPayload<{ select: typeof publicUserSelect
  */
 export type UserStatus = "active" | "inactive" | "deleted";
 
+/**
+ * The columns the list can be ordered by. The members are exactly the column
+ * ids the client's table uses, so the header the admin clicks, the parameter on
+ * the wire and the key into `ORDER_BY` below are one string. Mirrored in
+ * `client/src/lib/users.ts`, the same arrangement `UserStatus` already has.
+ */
+export type UserSortBy = "name" | "email" | "role" | "status" | "createdAt";
+
+/** Declared per service rather than shared - see the note in `tickets.ts`. */
+export type SortDir = "asc" | "desc";
+
 export type ListUsersOptions = {
   /** Trimmed, non-empty. Case-insensitive substring of name or email. */
   q?: string;
   role?: Role;
   status?: UserStatus;
+  /**
+   * Optional, unlike the ticket list's, which the route defaults. The users
+   * default is a composite that no `sortBy` member names, so there is no value
+   * the route could default to - the absence is itself the instruction, and
+   * only the service knows what it means.
+   */
+  sortBy?: UserSortBy;
+  sortDir?: SortDir;
   /** 1-based. */
   page: number;
   pageSize: number;
@@ -40,6 +59,36 @@ const STATUS_FILTERS: Record<UserStatus, Prisma.UserWhereInput> = {
   active: { active: true },
   inactive: { active: false, deletedAt: null },
   deleted: { deletedAt: { not: null } },
+};
+
+/**
+ * Active accounts first, then newest. The admin page reads top-down. No
+ * `sortBy` names this: it is a composite, and it is what `/users` shows when
+ * the URL asks for no particular column - which is why a bare `/users` shows
+ * no column as sorted rather than pretending one of them describes this.
+ * `id` breaks `createdAt` ties so a row cannot appear on two pages.
+ */
+const DEFAULT_ORDER_BY: Prisma.UserOrderByWithRelationInput[] = [
+  { active: "desc" },
+  { createdAt: "desc" },
+  { id: "asc" },
+];
+
+/**
+ * One `orderBy` fragment per sortable column, keyed by the union so adding a
+ * column is a compile error until it has an ordering.
+ */
+const ORDER_BY: Record<UserSortBy, (dir: SortDir) => Prisma.UserOrderByWithRelationInput[]> = {
+  name: (dir) => [{ name: dir }],
+  email: (dir) => [{ email: dir }],
+  role: (dir) => [{ role: dir }],
+  // The three-way Status the table shows, which is derived from `active` plus
+  // `deletedAt` rather than stored. On `desc` this is Active -> Inactive ->
+  // Deleted: `active desc` puts the live rows first, and Postgres sorts NULLs
+  // first on DESC, so inactive (`deletedAt` null) precedes deleted. `asc` is
+  // the exact mirror.
+  status: (dir) => [{ active: dir }, { deletedAt: dir }],
+  createdAt: (dir) => [{ createdAt: dir }],
 };
 
 /**
@@ -58,13 +107,22 @@ export async function listUsers(options: ListUsersOptions) {
     }),
   };
 
+  // A `sortDir` with no `sortBy` is accepted and ignored: it names no column.
+  // The client writes both keys or neither.
+  const dir = options.sortDir ?? "desc";
+  const orderBy =
+    options.sortBy === undefined
+      ? DEFAULT_ORDER_BY
+      : // The unique tiebreaker is appended in one place, so no key can be
+        // added without it and no row can straddle a page.
+        [...ORDER_BY[options.sortBy](dir), { id: "asc" as const }];
+
   const [users, total] = await prisma.$transaction([
     prisma.user.findMany({
       where,
       select: publicUserSelect,
-      // Active accounts first, then newest. The admin page reads top-down.
-      // `id` breaks createdAt ties so a row cannot appear on two pages.
-      orderBy: [{ active: "desc" }, { createdAt: "desc" }, { id: "asc" }],
+      // The whole result set is ordered here, not the visible page.
+      orderBy,
       skip: (options.page - 1) * options.pageSize,
       take: options.pageSize,
     }),

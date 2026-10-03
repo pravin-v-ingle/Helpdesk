@@ -190,6 +190,17 @@ model Ticket {
   rawEmails      RawEmail[]
 
   /// The list view filters then sorts, so the filter column leads each index.
+  ///
+  /// Every column is sortable from the UI, and `subject`, `requesterName` and
+  /// the `messages` count are deliberately *not* indexed for it. An index
+  /// serves a sort only when it covers the leading ORDER BY term and the WHERE
+  /// is compatible, so honest coverage would mean roughly three filter shapes
+  /// times six sort keys of composite indexes - to order a table with one row
+  /// per support thread, with `pageSize` capped at 100. Sorting by status or
+  /// category already gets partial help from the two composites below, and the
+  /// message count is unindexable under any scheme (it is a LEFT JOIN +
+  /// GROUP BY + ORDER BY count(*)). Revisit when list latency is measurable or
+  /// the table passes roughly 100k rows.
   @@index([status, lastMessageAt])
   @@index([category, lastMessageAt])
   @@index([lastMessageAt])

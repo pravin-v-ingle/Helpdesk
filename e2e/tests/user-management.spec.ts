@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import {
   createUser,
+  deactivateUser,
   fetchUser,
   Role,
   TEST_USER_PASSWORD,
@@ -11,13 +12,15 @@ import { signInAs } from "./helpers/auth.ts";
 /**
  * Admin user management on `/users`, happy paths only: creating a user through
  * the "Add user" dialog, reading the list (columns, search, the Role filter,
- * paging, and the URL state behind all three), and one journey that walks a
- * single account through create, read, update and delete in order.
+ * sorting, paging, and the URL state behind all of them), and one journey that
+ * walks a single account through create, read, update and delete in order.
  *
  * Refusals and validation live elsewhere on purpose - `user-edit.spec.ts` has
  * the duplicate email and the short password, `deletion.spec.ts` and
  * `deactivation.spec.ts` have the server's guards, `api-guards.spec.ts` has the
- * 401/403s. Nothing here is expected to fail.
+ * 401/403s. The one exception is the 400 for an unknown `sortBy`, which sits
+ * with the sorting tests below: the message is the list of sortable columns,
+ * so it belongs beside the tests that name them rather than three files away.
  *
  * Every test creates its own users with a token in both name and email and
  * opens the list as `?q=<token>`, so it sees only its own rows no matter what
@@ -52,6 +55,35 @@ function rowFor(page: Page, email: string) {
  */
 function searchBox(page: Page) {
   return page.getByRole("searchbox", { name: "Search" });
+}
+
+/**
+ * A column header of the users table, by its label - the `<th>`, not the button
+ * inside it, because `aria-sort` lives on the header cell. The exact name match
+ * is deliberate: the direction indicator is an `aria-hidden` icon, so a
+ * header's accessible name stays exactly its column label.
+ */
+function sortHeader(page: Page, label: string) {
+  return usersTable(page).getByRole("columnheader", { name: label, exact: true });
+}
+
+/**
+ * The sort keys in the page's URL, read as parsed parameters rather than
+ * compared as a query string: the assertion pins which keys are present and
+ * what they say, not the order `URLSearchParams` writes them in. `null` for
+ * both is the default order, which is spelled as their absence.
+ */
+function sortParams(page: Page): { sortBy: string | null; sortDir: string | null } {
+  const params = new URL(page.url()).searchParams;
+  return { sortBy: params.get("sortBy"), sortDir: params.get("sortDir") };
+}
+
+/** Every body row's Name cell, in the order the table renders them. */
+async function namesInOrder(page: Page): Promise<string[]> {
+  const rows = await usersTable(page).locator("tbody").getByRole("row").all();
+  return Promise.all(
+    rows.map(async (row) => ((await row.getByRole("cell").first().textContent()) ?? "").trim()),
+  );
 }
 
 function usersTable(page: Page) {
@@ -379,6 +411,121 @@ test.describe("Reading the users list", () => {
     await expect(searchBox(page)).toHaveValue(token);
     await expect(page.getByRole("combobox", { name: "Role" })).toContainText("Agent");
     expect(await emailsPresent(page, agents)).toEqual(before);
+  });
+});
+
+test.describe("Sorting the users list", () => {
+  // Uses the project's admin storage state.
+
+  test("the Name header sorts the list and keeps the column in the URL", async ({
+    page,
+    request,
+  }) => {
+    const token = groupToken("name-sort");
+    // Created out of alphabetical order, so the default (active first, then
+    // newest) is Bruno, Anita, Carla - neither of the sorted orders below, and
+    // therefore not an order a server ignoring `sortBy` could return.
+    const carla = await createUser(request, {
+      name: "Sortable Carla",
+      email: emailFor(token, "carla"),
+    });
+    const anita = await createUser(request, {
+      name: "Sortable Anita",
+      email: emailFor(token, "anita"),
+    });
+    const bruno = await createUser(request, {
+      name: "Sortable Bruno",
+      email: emailFor(token, "bruno"),
+    });
+    const unsorted = [bruno.name, anita.name, carla.name];
+
+    // The token narrows the list to this test's own three rows, so the whole
+    // page can be compared rather than filtered - the shared database cannot
+    // put anyone else among them.
+    await openUsersPage(page, `q=${token}`);
+    await expect(page.getByText("Showing 1–3 of 3")).toBeVisible();
+
+    const name = sortHeader(page, "Name");
+    const toggle = name.getByRole("button", { name: "Name" });
+    // Sortable but unsorted is `aria-sort="none"`; a column that cannot sort at
+    // all - Actions - carries no `aria-sort` attribute instead.
+    await expect(name).toHaveAttribute("aria-sort", "none");
+    await expect.poll(() => namesInOrder(page)).toEqual(unsorted);
+
+    await toggle.click();
+
+    await expect.poll(() => sortParams(page)).toEqual({ sortBy: "name", sortDir: "asc" });
+    await expect(name).toHaveAttribute("aria-sort", "ascending");
+    await expect.poll(() => namesInOrder(page)).toEqual([anita.name, bruno.name, carla.name]);
+
+    await toggle.click();
+
+    await expect.poll(() => sortParams(page)).toEqual({ sortBy: "name", sortDir: "desc" });
+    await expect(name).toHaveAttribute("aria-sort", "descending");
+    await expect.poll(() => namesInOrder(page)).toEqual([carla.name, bruno.name, anita.name]);
+
+    // A third click clears the sort rather than cycling back to ascending, and
+    // leaves nothing behind in the URL: the default order is a composite no
+    // column names, so it is written as the absence of both keys. The search
+    // term survives, because clearing a sort is not clearing a filter.
+    await toggle.click();
+
+    await expect(page).toHaveURL(`/users?q=${token}`);
+    await expect(name).toHaveAttribute("aria-sort", "none");
+    await expect.poll(() => namesInOrder(page)).toEqual(unsorted);
+  });
+
+  test("the default order puts an active account above a deactivated one", async ({
+    page,
+    request,
+  }) => {
+    const token = groupToken("default-order");
+    // The live account is created *first*, so `createdAt desc` alone would put
+    // the suspended one on top. `active desc` leading the composite is the one
+    // claim made here; absolute positions are not asserted, because the list is
+    // shared and only the token narrows it.
+    const live = await createUser(request, {
+      name: "Ordered Still Active",
+      email: emailFor(token, "live"),
+    });
+    const suspended = await createUser(request, {
+      name: "Ordered Then Suspended",
+      email: emailFor(token, "suspended"),
+    });
+    await deactivateUser(request, suspended.id);
+
+    await openUsersPage(page, `q=${token}`);
+    await expect(page.getByText("Showing 1–2 of 2")).toBeVisible();
+    // Both states are on screen, so the order below is about these two rows
+    // rather than about a row that failed to render.
+    await expect(rowFor(page, live.email).getByText("Active", { exact: true })).toBeVisible();
+    await expect(
+      rowFor(page, suspended.email).getByText("Inactive", { exact: true }),
+    ).toBeVisible();
+
+    const names = await namesInOrder(page);
+    expect(names).toContain(live.name);
+    expect(names.indexOf(suspended.name)).toBeGreaterThan(names.indexOf(live.name));
+  });
+
+  test("refuses an unknown sortBy", async ({ request }) => {
+    const res = await request.get("/api/users", { params: { sortBy: "bogus" } });
+
+    expect(res.status()).toBe(400);
+    // The route joins the keys of its own `SORT_BYS` record to build this, so
+    // the message is the sortable column list and cannot drift from it.
+    expect(await res.json()).toEqual({
+      error: "sortBy must be name, email, role, status, createdAt",
+    });
+  });
+
+  test("accepts a direction with no column, and ignores it", async ({ request }) => {
+    // `sortDir` alone names no column, so there is nothing for it to order.
+    // The server takes it rather than refusing it, which is what lets the two
+    // parameters be defaulted independently.
+    const res = await request.get("/api/users", { params: { sortDir: "asc" } });
+
+    expect(res.status(), await res.text()).toBe(200);
   });
 });
 

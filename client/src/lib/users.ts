@@ -5,14 +5,39 @@
 import type { CreateUserInput, EditUserInput } from '@helpdesk/core/schemas/users'
 import { queryOptions } from '@tanstack/react-query'
 import { apiFetch, type PublicUser, type Role } from './api.ts'
+import type { SortDir } from './sorting.ts'
 
 /** Mirrors `UserStatus` in `server/src/services/users.ts`. */
 export type UserStatus = 'active' | 'inactive' | 'deleted'
+
+/**
+ * The columns `GET /api/users` can order by. Mirrors `UserSortBy` in
+ * `server/src/services/users.ts`, and the members are exactly the column ids
+ * `UsersTable` gives TanStack Table. Actions is absent: it is not a column of
+ * anything. A `Record` keyed by itself, so adding a member is a compile error
+ * until it has an entry.
+ */
+const USER_SORT_BYS = {
+  name: true,
+  email: true,
+  role: true,
+  status: true,
+  createdAt: true,
+} as const
+
+export type UserSortBy = keyof typeof USER_SORT_BYS
+
+export function isUserSortBy(value: unknown): value is UserSortBy {
+  return typeof value === 'string' && Object.hasOwn(USER_SORT_BYS, value)
+}
 
 export type UserListParams = {
   q?: string
   role?: Role
   status?: UserStatus
+  /** Both keys or neither; absent means the server's default composite order. */
+  sortBy?: UserSortBy
+  sortDir?: SortDir
   page?: number
   pageSize?: number
 }

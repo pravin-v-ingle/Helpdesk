@@ -10,6 +10,7 @@
  */
 import { queryOptions } from '@tanstack/react-query'
 import { apiFetch } from './api.ts'
+import type { SortDir } from './sorting.ts'
 
 /**
  * Mirrors `enum TicketStatus` in `server/prisma/schema.prisma`. A const object
@@ -53,10 +54,30 @@ export function isCategoryFilter(value: unknown): value is CategoryFilter {
   return value === 'none' || isTicketCategory(value)
 }
 
-export type TicketSort = 'newest' | 'oldest'
+/**
+ * The columns `GET /api/tickets` can order by. Mirrors `TicketSortBy` in
+ * `server/src/services/tickets.ts`, and the members are exactly the column ids
+ * `TicketsTable` gives TanStack Table - the header an agent clicks, the
+ * parameter on the wire and the server's lookup key are one string, with no
+ * translation table that could drift.
+ *
+ * A `Record` keyed by itself rather than an array, so adding a member is a
+ * compile error until it has an entry; the guard is what turns a TanStack
+ * column id (typed as plain `string`) back into one of these.
+ */
+const TICKET_SORT_BYS = {
+  subject: true,
+  requesterName: true,
+  status: true,
+  category: true,
+  messageCount: true,
+  lastMessageAt: true,
+} as const
 
-export function isTicketSort(value: unknown): value is TicketSort {
-  return value === 'newest' || value === 'oldest'
+export type TicketSortBy = keyof typeof TICKET_SORT_BYS
+
+export function isTicketSortBy(value: unknown): value is TicketSortBy {
+  return typeof value === 'string' && Object.hasOwn(TICKET_SORT_BYS, value)
 }
 
 /**
@@ -87,7 +108,9 @@ export type Ticket = {
 export type TicketListParams = {
   status?: TicketStatus
   category?: CategoryFilter
-  sort?: TicketSort
+  /** Both keys or neither; absent means the server's default order. */
+  sortBy?: TicketSortBy
+  sortDir?: SortDir
   page?: number
   pageSize?: number
 }

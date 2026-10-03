@@ -108,6 +108,12 @@ function parseListQuery(query: Request["query"]): users.ListUsersOptions {
     q: parseSearch(query.q),
     role: query.role === undefined ? undefined : parseRoleOrThrow(query.role),
     status: query.status === undefined ? undefined : parseStatusOrThrow(query.status),
+    // Left undefined when absent rather than defaulted here: the users list's
+    // default order is a composite that no `sortBy` member names, so only the
+    // service can express it. (`routes/tickets.ts` defaults both at the route,
+    // because there the default *is* a column sort.)
+    sortBy: query.sortBy === undefined ? undefined : parseSortByOrThrow(query.sortBy),
+    sortDir: query.sortDir === undefined ? undefined : parseSortDirOrThrow(query.sortDir),
     page: parseIntParam(query.page, "page", 1),
     pageSize: parseIntParam(query.pageSize, "pageSize", DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE),
   };
@@ -147,6 +153,40 @@ function isUserStatus(value: unknown): value is users.UserStatus {
 function parseStatusOrThrow(value: unknown): users.UserStatus {
   if (isUserStatus(value)) return value;
   throw new HttpError(400, `status must be ${Object.keys(USER_STATUSES).join(", ")}`);
+}
+
+/**
+ * The sortable columns, keyed by the union so adding one to `UserSortBy` is a
+ * compile error until it is accepted here. The key order is also the order the
+ * 400 message lists them in, so the message cannot drift from the set. Actions
+ * is not here because it is not a column of anything.
+ */
+const SORT_BYS: Record<users.UserSortBy, true> = {
+  name: true,
+  email: true,
+  role: true,
+  status: true,
+  createdAt: true,
+};
+
+function isUserSortBy(value: unknown): value is users.UserSortBy {
+  return typeof value === "string" && Object.hasOwn(SORT_BYS, value);
+}
+
+function parseSortByOrThrow(value: unknown): users.UserSortBy {
+  if (isUserSortBy(value)) return value;
+  throw new HttpError(400, `sortBy must be ${Object.keys(SORT_BYS).join(", ")}`);
+}
+
+const SORT_DIRS: Record<users.SortDir, true> = { asc: true, desc: true };
+
+function isSortDir(value: unknown): value is users.SortDir {
+  return typeof value === "string" && Object.hasOwn(SORT_DIRS, value);
+}
+
+function parseSortDirOrThrow(value: unknown): users.SortDir {
+  if (isSortDir(value)) return value;
+  throw new HttpError(400, `sortDir must be ${Object.keys(SORT_DIRS).join(" or ")}`);
 }
 
 /**

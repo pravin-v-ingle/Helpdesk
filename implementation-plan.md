@@ -66,20 +66,20 @@ Built against seeded data, before email exists.
 
 - [x] 3.1 Add the `Ticket` model: status enum (`OPEN`, `RESOLVED`, `CLOSED`), category enum (`GENERAL_QUESTION`, `TECHNICAL_QUESTION`, `REFUND_REQUEST`), requester email and name, subject, timestamps.
 - [x] 3.2 Add the `Message` model for the emails and replies on a ticket, with an inbound or outbound direction.
-- [x] 3.3 Add indexes for the columns the list view filters and sorts on.
+- [x] 3.3 Add indexes for the columns the list view filters and sorts on. (Covers the filters and the default order. Every column became sortable in 3.9b and `subject`, `requesterName` and the message count are deliberately left unindexed - see the note on `Ticket`'s `@@index` block for the reasoning and the trigger to revisit.)
 - [ ] 3.4 Write a seed script that creates sample tickets and messages.
 - [x] 3.5 Implement `GET /api/tickets` with pagination, filter by status and category, and sort by date.
 - [ ] 3.6 Implement `GET /api/tickets/:id` returning the ticket and its messages.
 - [ ] 3.7 Implement `PATCH /api/tickets/:id` to change status and category.
 - [ ] 3.8 Implement `POST /api/tickets/:id/messages` to add an agent reply (stored only for now).
 - [x] 3.9a Build the ticket list page: `/tickets` shows a paginated table with status and category filters, all of its state in the URL. Not admin-gated - working tickets is the agent's job.
-- [ ] 3.9b Add a sorting control to `/tickets`. `GET /api/tickets` has accepted `?sort=newest|oldest` since 3.5; no control sets it.
+- [x] 3.9b Make every column header on `/tickets` a sort control, with the sorting done on the server. TanStack Table v9 owns the column model and the toggle cycle; `sortBy` and `sortDir` live in the URL and go to the API. The old `?sort=newest|oldest` is retired. `/users` migrated to the same idiom in the same change.
 - [ ] 3.10 Build the ticket detail page showing the message thread.
 - [ ] 3.11 Add status and category controls to the detail page.
 - [ ] 3.12 Add the reply composer to the detail page.
 - [ ] 3.13 Add loading, empty, and error states to both pages.
 
-**Done when**: an agent can browse, filter, and sort tickets, open one, change its status and category, and write a reply.
+**Done when**: an agent can browse, filter, and sort tickets - by any column, in either direction, with the choice surviving a reload - open one, change its status and category, and write a reply.
 
 ---
 

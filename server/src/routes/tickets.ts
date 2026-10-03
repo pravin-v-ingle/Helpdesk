@@ -26,11 +26,18 @@ ticketsRouter.get("/", async (req, res) => {
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 
+/** What the list falls back to, which is also what the table shows as sorted. */
+const DEFAULT_SORT_BY: tickets.TicketSortBy = "lastMessageAt";
+const DEFAULT_SORT_DIR: tickets.SortDir = "desc";
+
 function parseListQuery(query: Request["query"]): tickets.ListTicketsOptions {
   return {
     status: query.status === undefined ? undefined : parseStatusOrThrow(query.status),
     category: query.category === undefined ? undefined : parseCategoryOrThrow(query.category),
-    sort: query.sort === undefined ? "newest" : parseSortOrThrow(query.sort),
+    // Defaulted independently, so `?sortDir=asc` on its own is meaningful -
+    // consistent with `status` and `category` being independent of each other.
+    sortBy: query.sortBy === undefined ? DEFAULT_SORT_BY : parseSortByOrThrow(query.sortBy),
+    sortDir: query.sortDir === undefined ? DEFAULT_SORT_DIR : parseSortDirOrThrow(query.sortDir),
     page: parseIntParam(query.page, "page", 1),
     pageSize: parseIntParam(query.pageSize, "pageSize", DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE),
   };
@@ -78,15 +85,38 @@ function parseCategoryOrThrow(value: unknown): tickets.CategoryFilter {
   throw new HttpError(400, `category must be ${Object.keys(CATEGORY_FILTERS).join(", ")}`);
 }
 
-const SORTS: Record<tickets.TicketSort, true> = { newest: true, oldest: true };
+/**
+ * The sortable columns, keyed by the union so adding one to `TicketSortBy` is
+ * a compile error until it is accepted here. The key order is also the order
+ * the 400 message lists them in, so the message cannot drift from the set.
+ */
+const SORT_BYS: Record<tickets.TicketSortBy, true> = {
+  subject: true,
+  requesterName: true,
+  status: true,
+  category: true,
+  messageCount: true,
+  lastMessageAt: true,
+};
 
-function isTicketSort(value: unknown): value is tickets.TicketSort {
-  return typeof value === "string" && Object.hasOwn(SORTS, value);
+function isTicketSortBy(value: unknown): value is tickets.TicketSortBy {
+  return typeof value === "string" && Object.hasOwn(SORT_BYS, value);
 }
 
-function parseSortOrThrow(value: unknown): tickets.TicketSort {
-  if (isTicketSort(value)) return value;
-  throw new HttpError(400, `sort must be ${Object.keys(SORTS).join(" or ")}`);
+function parseSortByOrThrow(value: unknown): tickets.TicketSortBy {
+  if (isTicketSortBy(value)) return value;
+  throw new HttpError(400, `sortBy must be ${Object.keys(SORT_BYS).join(", ")}`);
+}
+
+const SORT_DIRS: Record<tickets.SortDir, true> = { asc: true, desc: true };
+
+function isSortDir(value: unknown): value is tickets.SortDir {
+  return typeof value === "string" && Object.hasOwn(SORT_DIRS, value);
+}
+
+function parseSortDirOrThrow(value: unknown): tickets.SortDir {
+  if (isSortDir(value)) return value;
+  throw new HttpError(400, `sortDir must be ${Object.keys(SORT_DIRS).join(" or ")}`);
 }
 
 /**

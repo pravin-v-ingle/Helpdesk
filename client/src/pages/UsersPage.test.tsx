@@ -127,6 +127,11 @@ function bodyRows(table: HTMLElement) {
   return within(table).getAllByRole('row').slice(1)
 }
 
+/** A column header, by its label - which is exactly the text it shows. */
+function sortHeader(table: HTMLElement, label: string) {
+  return within(table).getByRole('columnheader', { name: label })
+}
+
 function shortDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { dateStyle: 'medium' })
 }
@@ -238,11 +243,14 @@ describe('UsersPage', () => {
 
   it('normalises URL values the server would refuse', async () => {
     mockedApiFetch.mockResolvedValue(listResponse([admin]))
-    const page = renderPage('/users?q=%20%20&role=OWNER&status=maybe&page=abc&pageSize=999')
+    const page = renderPage(
+      '/users?q=%20%20&role=OWNER&status=maybe&sortBy=bogus&sortDir=sideways&page=abc&pageSize=999',
+    )
     await page.table()
 
-    // Blank search dropped, unknown role and status dropped, page defaulted,
-    // page size clamped to the server's maximum.
+    // Blank search dropped, unknown role, status and sort column dropped, page
+    // defaulted, page size clamped to the server's maximum. `sortDir` goes
+    // with the column it has no business without.
     expect(requestedPaths()).toEqual(['/api/users?page=1&pageSize=100'])
     expect(screen.getByLabelText('Search')).toHaveValue('')
     expect(screen.getByRole('combobox', { name: 'Role' })).toHaveTextContent('All roles')
@@ -313,6 +321,118 @@ describe('UsersPage', () => {
       expect(requestedPaths()).toContain('/api/users?status=deleted&page=1&pageSize=20'),
     )
     expect(await screen.findByText('Eve Deleted')).toBeInTheDocument()
+  })
+
+  /**
+   * The list's default order is a composite - active accounts first, then
+   * newest - that no single column describes, so claiming any one of them is
+   * "the" sort would be a lie. This pins the decision not to change that
+   * default when the headers became controls: no column sorted, and the
+   * request unchanged from what it has always been.
+   */
+  it('shows no column as sorted by default', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([agent, admin]))
+    const page = renderPage()
+    const table = await page.table()
+
+    for (const label of ['Name', 'Email', 'Role', 'Status', 'Created']) {
+      expect(sortHeader(table, label)).toHaveAttribute('aria-sort', 'none')
+    }
+    expect(requestedPaths()).toEqual(['/api/users?page=1&pageSize=20'])
+  })
+
+  it('offers no sort on Actions', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([agent]))
+    const page = renderPage()
+    const table = await page.table()
+
+    // Not `aria-sort="none"`, which would claim Actions is a sortable column
+    // that happens to be unsorted.
+    const actions = sortHeader(table, 'Actions')
+    expect(actions).not.toHaveAttribute('aria-sort')
+    expect(within(actions).queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it('sorts by a column header, reverses it, then clears back to the default', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([agent, admin]))
+    const user = userEvent.setup()
+    const page = renderPage()
+    let table = await page.table()
+
+    await user.click(within(table).getByRole('button', { name: 'Name' }))
+
+    await waitFor(() => expect(page.search()).toBe('?sortBy=name&sortDir=asc'))
+    // The refetch follows the URL change by a render, so it is awaited too -
+    // asserting it synchronously here races the query and fails intermittently.
+    await waitFor(() =>
+      expect(requestedPaths()).toContain('/api/users?sortBy=name&sortDir=asc&page=1&pageSize=20'),
+    )
+    table = await page.table()
+    expect(sortHeader(table, 'Name')).toHaveAttribute('aria-sort', 'ascending')
+
+    await user.click(within(table).getByRole('button', { name: 'Name' }))
+
+    await waitFor(() => expect(page.search()).toBe('?sortBy=name&sortDir=desc'))
+    await waitFor(() =>
+      expect(requestedPaths()).toContain('/api/users?sortBy=name&sortDir=desc&page=1&pageSize=20'),
+    )
+    table = await page.table()
+    expect(sortHeader(table, 'Name')).toHaveAttribute('aria-sort', 'descending')
+
+    // A third click removes the sort, which is the composite default - stored
+    // as absent, so the URL goes bare and no column is sorted again.
+    await user.click(within(table).getByRole('button', { name: 'Name' }))
+
+    await waitFor(() => expect(page.search()).toBe(''))
+    await waitFor(() => expect(requestedPaths().at(-1)).toBe('/api/users?page=1&pageSize=20'))
+    expect(sortHeader(await page.table(), 'Name')).toHaveAttribute('aria-sort', 'none')
+  })
+
+  /**
+   * Created is `sortDescFirst`, so one click asks for the newest rather than
+   * the oldest - the useful half of a date column, and what the default order
+   * already shows.
+   */
+  it('sorts Created descending on the first click', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([newAgent, agent]))
+    const user = userEvent.setup()
+    const page = renderPage()
+    const table = await page.table()
+
+    await user.click(within(table).getByRole('button', { name: 'Created' }))
+
+    await waitFor(() => expect(page.search()).toBe('?sortBy=createdAt&sortDir=desc'))
+    await waitFor(() =>
+      expect(requestedPaths()).toContain(
+        '/api/users?sortBy=createdAt&sortDir=desc&page=1&pageSize=20',
+      ),
+    )
+  })
+
+  it('reads the sort from the URL and reflects it in the headers', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([former, agent]))
+    const page = renderPage('/users?sortBy=status&sortDir=desc')
+    const table = await page.table()
+
+    expect(requestedPaths()).toEqual(['/api/users?sortBy=status&sortDir=desc&page=1&pageSize=20'])
+    expect(sortHeader(table, 'Status')).toHaveAttribute('aria-sort', 'descending')
+    expect(sortHeader(table, 'Name')).toHaveAttribute('aria-sort', 'none')
+  })
+
+  it('drops the page when the sort changes', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([agent], { total: 9, page: 3, pageSize: 2 }))
+    const user = userEvent.setup()
+    const page = renderPage('/users?page=3&pageSize=2')
+    const table = await page.table()
+
+    await user.click(within(table).getByRole('button', { name: 'Email' }))
+
+    // Re-ordering makes the page number meaningless, so it goes back to 1 -
+    // which is stored as absent.
+    await waitFor(() => expect(page.search()).toBe('?pageSize=2&sortBy=email&sortDir=asc'))
+    await waitFor(() =>
+      expect(requestedPaths()).toContain('/api/users?sortBy=email&sortDir=asc&page=1&pageSize=2'),
+    )
   })
 
   it('pages with Previous and Next, disabled at the ends', async () => {

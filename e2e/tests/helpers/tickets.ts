@@ -27,6 +27,23 @@ export const TicketCategory = {
 
 export type TicketCategory = (typeof TicketCategory)[keyof typeof TicketCategory];
 
+/**
+ * The columns `GET /api/tickets` can order by - mirrors `TicketSortBy` in
+ * `server/src/services/tickets.ts` and the const in `client/src/lib/tickets.ts`.
+ * A union rather than a loose string, because this is what stops the query
+ * helper below accepting a parameter the API has never heard of: the retired
+ * `?sort=newest|oldest` went on compiling for exactly that reason.
+ */
+export type TicketSortBy =
+  | "subject"
+  | "requesterName"
+  | "status"
+  | "category"
+  | "messageCount"
+  | "lastMessageAt";
+
+export type SortDir = "asc" | "desc";
+
 /** Mirrors `publicTicketSelect` in `server/src/services/tickets.ts`. */
 export type Ticket = {
   id: number;
@@ -51,12 +68,36 @@ export type TicketListResponse = {
 /** The largest page `GET /api/tickets` allows. */
 const MAX_PAGE_SIZE = 100;
 
+/**
+ * Every parameter `GET /api/tickets` accepts, each typed as the server types
+ * it. A spec that wants to send something the API would refuse has to call
+ * `request.get` itself - which is what the 400 tests do - so a typo in a
+ * parameter name cannot quietly become an ignored key and a passing test.
+ */
+export type TicketListQuery = {
+  status?: TicketStatus;
+  category?: TicketCategory | "none";
+  /** Both keys or neither; omitting them asks for the server's default order. */
+  sortBy?: TicketSortBy;
+  sortDir?: SortDir;
+  page?: number;
+  pageSize?: number;
+};
+
 /** One page of `GET /api/tickets`, asserting the request succeeded. */
 export async function listTickets(
   request: APIRequestContext,
-  query: Record<string, string | number> = {},
+  query: TicketListQuery = {},
 ): Promise<TicketListResponse> {
-  const res = await request.get("/api/tickets", { params: query });
+  // Rebuilt into Playwright's index-signature shape, dropping the keys that
+  // were left undefined: an absent parameter and an empty one are different
+  // requests, and only the first means "whatever the server's default is".
+  const params: Record<string, string | number> = {};
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined) params[key] = value;
+  }
+
+  const res = await request.get("/api/tickets", { params });
   expect(res.status(), await res.text()).toBe(200);
   return (await res.json()) as TicketListResponse;
 }
@@ -125,4 +166,17 @@ export function ticketCells(row: Locator) {
     messages: cells.nth(4),
     lastMessage: cells.nth(5),
   };
+}
+
+/**
+ * A column header of the tickets table, by its label - the `<th>` itself, not
+ * the button inside it. `aria-sort` is on the header cell (ARIA puts it there,
+ * and `SortableHead.tsx` follows), so this is the locator a direction
+ * assertion reads; to sort, click `sortHeader(page, "Subject").getByRole(
+ * "button", { name: "Subject" })`. The exact name match is what keeps the
+ * header's accessible name pinned to the bare column label: the direction
+ * indicator is an `aria-hidden` icon, never a text glyph.
+ */
+export function sortHeader(page: Page, label: string): Locator {
+  return ticketsTable(page).getByRole("columnheader", { name: label, exact: true });
 }

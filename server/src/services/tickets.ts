@@ -40,8 +40,69 @@ function toPublicTicket({ _count, ...ticket }: TicketRow): PublicTicket {
   return { ...ticket, messageCount: _count.messages };
 }
 
-/** Newest or oldest activity first. The list's one ordering control. */
-export type TicketSort = "newest" | "oldest";
+/**
+ * The columns the list can be ordered by. The members are exactly the column
+ * ids the client's table uses, so the header the agent clicks, the parameter on
+ * the wire and the key into `ORDER_BY` below are one string with no translation
+ * table between them. Mirrored in `client/src/lib/tickets.ts` - a duplicated
+ * vocabulary with a guard, the same arrangement `TicketStatus` already has,
+ * because `core/` is for Zod schemas a form fills and may not import Prisma.
+ */
+export type TicketSortBy =
+  | "subject"
+  | "requesterName"
+  | "status"
+  | "category"
+  | "messageCount"
+  | "lastMessageAt";
+
+/**
+ * Declared here rather than shared with the users service: it coincides with
+ * `Prisma.SortOrder`, and spelling it out keeps the wire vocabulary ours rather
+ * than whatever Prisma happens to call its own.
+ */
+export type SortDir = "asc" | "desc";
+
+/**
+ * One `orderBy` fragment per sortable column, keyed by the union so adding a
+ * column is a compile error until it has an ordering. A `Record` rather than a
+ * ternary: the ternary this replaced treated every unrecognised value as
+ * `desc`, which is exactly the silence a lookup cannot produce.
+ *
+ * Two things worth knowing about what Postgres does with these. Enum columns
+ * sort by the Prisma schema's *declaration* order, so `status` runs
+ * OPEN < RESOLVED < CLOSED (lifecycle order, which is what an agent wants) while
+ * `category` runs General < Technical < Refund, whose labels read in a different
+ * order. And `category` is nullable, so the unclassified sink to the bottom on
+ * `asc` and rise to the top on `desc`.
+ */
+const ORDER_BY: Record<TicketSortBy, (dir: SortDir) => Prisma.TicketOrderByWithRelationInput[]> = {
+  subject: (dir) => [{ subject: dir }],
+  // The address is the secondary term because `requesterName` falls back to the
+  // local part of the address when `From` carries no display name, so duplicate
+  // names are routine rather than exceptional.
+  requesterName: (dir) => [{ requesterName: dir }, { requesterEmail: dir }],
+  // With three distinct values, "sort by status" is really "group by status",
+  // and without a second term the rows inside a group fall back to `id asc` -
+  // oldest first, the opposite of queue order. The cost is that `desc` is not
+  // then the strict inverse of `asc`: the grouping flips, the order within a
+  // group does not. The direction control is about the column that was clicked.
+  status: (dir) => [{ status: dir }, { lastMessageAt: "desc" }],
+  category: (dir) => [{ category: dir }, { lastMessageAt: "desc" }],
+  // Not a column: the `_count` aggregate. A LEFT JOIN + GROUP BY + ORDER BY
+  // count(*) - the one query whose shape changes with the sort key, and the one
+  // no index can help.
+  messageCount: (dir) => [{ messages: { _count: dir } }],
+  lastMessageAt: (dir) => [{ lastMessageAt: dir }],
+};
+
+function orderByFor(sortBy: TicketSortBy, sortDir: SortDir) {
+  // The unique tiebreaker is appended in one place rather than repeated six
+  // times, so no key can be added without it and no row can straddle a page -
+  // two emails arriving in the same millisecond is unlikely, but a mail burst
+  // is exactly when it would happen.
+  return [...ORDER_BY[sortBy](sortDir), { id: "asc" as const }];
+}
 
 /**
  * `"none"` selects the unclassified. A separate value rather than an absent
@@ -54,7 +115,14 @@ export type CategoryFilter = TicketCategory | "none";
 export type ListTicketsOptions = {
   status?: TicketStatus;
   category?: CategoryFilter;
-  sort: TicketSort;
+  /**
+   * Non-optional, the treatment `sort` had before it: the route defaults both
+   * independently, which is what keeps the `ORDER_BY` lookup provably total.
+   * (`services/users.ts` defaults in the service instead, because its default
+   * is a composite no single column names - see `DEFAULT_ORDER_BY` there.)
+   */
+  sortBy: TicketSortBy;
+  sortDir: SortDir;
   /** 1-based. */
   page: number;
   pageSize: number;
@@ -74,17 +142,15 @@ export async function listTickets(
     }),
   };
 
-  const direction = options.sort === "oldest" ? "asc" : "desc";
-
   const [tickets, total] = await prisma.$transaction([
     prisma.ticket.findMany({
       where,
       select: publicTicketSelect,
-      // Activity order, which is what an agent working a queue wants. `id`
-      // breaks ties so a row cannot appear on two pages - two emails arriving
-      // in the same millisecond is unlikely but a mail burst is exactly when
-      // it would happen.
-      orderBy: [{ lastMessageAt: direction }, { id: "asc" }],
+      // The whole result set is ordered here, not the visible page, so paging
+      // stays correct under any sort. With no parameters this is
+      // `[{ lastMessageAt: "desc" }, { id: "asc" }]` - activity order, which is
+      // what an agent working a queue wants.
+      orderBy: orderByFor(options.sortBy, options.sortDir),
       skip: (options.page - 1) * options.pageSize,
       take: options.pageSize,
     }),

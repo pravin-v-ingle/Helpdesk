@@ -293,6 +293,52 @@ Styling is shadcn/ui on Tailwind CSS v4; `tech-stack.md` has the reasoning.
 - **Dark mode is the `.dark` class on `<html>`.** An inline script in
   `index.html` sets it from `prefers-color-scheme` before first paint. There is
   no in-app toggle yet.
+- **A data table is TanStack Table v9 with the sorting done on the server.**
+  `TicketsTable.tsx` and `UsersTable.tsx` are the two examples and the repo has
+  no other table idiom - do not hand-roll the next one. The shape: `features =
+  tableFeatures({ rowSortingFeature })` and `helper =
+  createColumnHelper<typeof features, TRow>()` at module scope, the cell
+  renderers inside the column defs (which is what makes a label-order /
+  cell-order mismatch structurally impossible), and `useTable({ features,
+  columns, data, manualSorting: true, enableMultiSort: false, state: {
+  sorting }, onSortingChange, getRowId })`. Four of those are deliberate and
+  load-bearing:
+  - **`manualSorting: true` and no `sortedRowModel`.** The library owns the
+    column model, the header state and the toggle cycle; the database owns the
+    order. Nothing is re-sorted in the browser, because the server sorts the
+    whole result set and the page shows one page of it - re-sorting the visible
+    page would silently break paging. Registering a row model later is the one
+    change that would undo this, which is what
+    `TicketsPage.test.tsx`'s "renders rows in the order the server returned
+    them" exists to catch.
+  - **`getRowId`**, or React keys rows by index and a re-sort reuses DOM nodes
+    across semantically different rows.
+  - **Controlled `state.sorting`, derived from the URL.** The page is the only
+    owner; a header click is a URL write that comes back round as new props.
+    `client/src/lib/sorting.ts` holds `SortDir`, `Sort<TKey>`,
+    `toSortingState()` and `sortingChangeHandler()` - the adapter from
+    TanStack's updater-or-value callback to a single-column URL write, and the
+    one place a column id (typed as a plain `string`) is validated back into a
+    sort key. TanStack's types never reach a page.
+  - **`sortDescFirst` set explicitly on every column**, as the v9 docs advise:
+    the type sniffing misjudges nullable columns, and `category` is `null` on
+    every row today.
+  Register **no pagination feature** - `Pagination.tsx` and the server own
+  paging between them, and `rowCount` does nothing without
+  `rowPaginationFeature`. Headers render through
+  `components/SortableHead.tsx`, which takes plain scalars rather than a
+  TanStack `Header` so no v9 generic reaches our own checked code. Its rules:
+  `aria-sort` goes on the `<th>` where ARIA puts it; the button's only text
+  node is the column label and the direction is an `aria-hidden` lucide icon,
+  **never** a text glyph or visually hidden state text, because assertions in
+  both test suites compare header `textContent` against the exact label; and a
+  non-sortable column (Actions) gets no `aria-sort` attribute at all rather
+  than `"none"`, which would claim it is a sortable column that happens to be
+  unsorted. The sort vocabulary is a per-workspace mirror with a guard, the
+  same arrangement `Role` has - `TicketSortBy` in `lib/tickets.ts`,
+  `UserSortBy` in `lib/users.ts`, each matching a union in the service that
+  keys a `Record` of Prisma `orderBy` fragments. Column ids equal the sort keys
+  exactly, so nothing needs translating.
 - **Loading states are `Skeleton` placeholders shaped like the content**, not
   a "Loading…" message or a spinner. `ProtectedRoute` shows a shell skeleton
   (nav strip, heading, text lines) while the session is restored;
@@ -404,13 +450,23 @@ below); unset means none.
   (case-insensitive substring of name or email, trimmed, max 100 chars),
   `?role=ADMIN|AGENT`, `?status=active|inactive|deleted` (one parameter for
   the one UI control, rather than two booleans that could ask for a
-  combination that never exists), `?page=` (1-based, default 1)
+  combination that never exists), `?sortBy=name|email|role|status|createdAt`
+  with `?sortDir=asc|desc`, `?page=` (1-based, default 1)
   and `?pageSize=` (default 20, max 100), and returns `{ users, total, page,
   pageSize }`. A bad value is a 400 naming the field; a page past the end is
-  `users: []` with the real `total`. Ordering is active first, then newest,
-  then `id` so a row cannot straddle two pages - which sinks deleted rows to
+  `users: []` with the real `total`. **The default ordering is unchanged**:
+  with no `sortBy` it is active first, then newest, then `id` so a row cannot
+  straddle two pages - which sinks deleted rows to
   the bottom, interleaved with the deactivated ones rather than below them, so
-  the Status filter rather than the order is what separates the two. Guards in the service: a user
+  the Status filter rather than the order is what separates the two. That
+  default is a composite no `sortBy` member names, which is why - unlike the
+  ticket list, whose route defaults both parameters - `ListUsersOptions`
+  leaves them optional and `services/users.ts` picks `DEFAULT_ORDER_BY` when
+  `sortBy` is absent, and why a bare `/users` shows no column as sorted. A
+  lone `?sortDir=` is accepted and ignored: it names no column. `sortBy=status`
+  orders by `active` then `deletedAt`, which is the three-way Status the table
+  shows: on `desc`, Active -> Inactive -> Deleted, because Postgres sorts NULLs
+  first on DESC. Guards in the service: a user
   cannot change their own role or deactivate themselves, and the last active
   admin cannot be demoted or deactivated. The last-admin check and the write
   it guards run in one serializable transaction (`serializable()` in the
@@ -681,12 +737,31 @@ is the agent's job (`project-scope.md`), and `/tickets` sits outside the
 are sequential integers and therefore guessable, which is fine precisely because
 every signed-in user may read every ticket.
 
-Parameters: `status`, `category` (plus `none` for the unclassified), `sort`
-(`newest` or `oldest`), `page`, `pageSize`. Returns `{ tickets, total, page,
-pageSize }`. Ordering is `[{ lastMessageAt }, { id: "asc" }]` - the `id`
-tiebreaker is what stops a row straddling two pages. `category=none` exists
-because until Phase 5 every ticket has `category: null`, so a Category filter
-without it would be a control that can only ever return nothing.
+Parameters: `status`, `category` (plus `none` for the unclassified), `sortBy`,
+`sortDir`, `page`, `pageSize`. Returns `{ tickets, total, page, pageSize }`.
+`category=none` exists because until Phase 5 every ticket has `category: null`,
+so a Category filter without it would be a control that can only ever return
+nothing.
+
+**Ordering** is `sortBy` + `sortDir`, defaulting to `lastMessageAt` / `desc`
+independently of each other, so `?sortDir=asc` alone is meaningful. `sortBy` is
+one of `subject`, `requesterName`, `status`, `category`, `messageCount`,
+`lastMessageAt` - the members are exactly the column ids the client's table
+uses, so the header an agent clicks, the parameter on the wire and the server's
+lookup key are one string. An `ORDER_BY` `Record` keyed by that union
+(`services/tickets.ts`) replaces the old non-exhaustive ternary, and
+`orderByFor` appends `{ id: "asc" }` in one place, so no sort key can be added
+without the tiebreaker that stops a row straddling two pages. The old
+`?sort=newest|oldest` is **retired with no alias**. Four things worth knowing:
+`messageCount` orders by a relation count (`{ messages: { _count: dir } }`), not
+a column, so it is the one sort no index can help; `status` and `category` carry
+`{ lastMessageAt: "desc" }` as a secondary term, because with three distinct
+values "sort by status" is really "group by status" and `id asc` inside a group
+is the opposite of queue order - the price is that `desc` is not then the strict
+inverse of `asc`; enum columns sort by Prisma **declaration** order, so `status`
+gives OPEN < RESOLVED < CLOSED but `category` gives General < Technical <
+Refund, whose labels read in a different order; and `category` is nullable, so
+Postgres puts the unclassified last on `asc` and first on `desc`.
 
 The list response deliberately omits three `Ticket` columns: `bodyHtml` is
 untrusted sender markup and nothing on the client sanitises it, and `body` and
@@ -905,9 +980,10 @@ showing the signed-in user with a sign-out button, a Tickets link for everyone
 and a Users link for admins, a `RequireRole` wrapper, a redirect to `/login` on
 any 401, and two list pages that share the same shape.
 
-The admin user list at `/users` - a table with search, role and status filters
-and Previous/Next paging, all of its state in the URL (`q`, `role`, `status`,
-`page`, `pageSize`) so a reload or Back keeps the view (the rows themselves
+The admin user list at `/users` - a table with search, role and status filters,
+sortable column headers and Previous/Next paging, all of its state in the URL
+(`q`, `role`, `status`, `sortBy`, `sortDir`, `page`, `pageSize`) so a reload or
+Back keeps the view (the rows themselves
 are rendered by `components/UsersTable.tsx`, which the page hands its data
 to, whose Status cell is three-way - Active / Inactive / Deleted, the last
 from `deletedAt` - and whose Actions column carries a per-row edit button and,
@@ -922,8 +998,10 @@ email, and leaves the password alone unless one is typed;
 `components/DeleteUserDialog.tsx` is the delete button's confirmation - an
 `AlertDialog` rather than a `Dialog`, with its own `useMutation` behind
 `DELETE /api/users/:id` (see Conventions → destructive confirmations);
-`client/src/lib/users.ts` is the API client and query definitions,
-and the page reads them with TanStack Query.
+`client/src/lib/users.ts` is the API client, the query definitions and the
+`UserSortBy` mirror, and the page reads them with TanStack Query. Every header
+but Actions sorts; on a bare `/users` none of them reads as sorted, because the
+default order is a composite no column describes.
 
 The ticket queue at `/tickets` - the same pattern, deliberately: `TicketsPage`
 was built from `UsersPage` and keeps its `readFilters` / `updateFilters` / URL
@@ -933,8 +1011,10 @@ header button because nothing creates a ticket from the UI. `Pagination` was
 extracted out of `UsersPage` so both use it. Rows are inert until the detail page
 (3.10). `components/TicketsTable.tsx` renders them - requester name over address,
 an em dash for an unclassified ticket, a message count - and
-`client/src/lib/tickets.ts` holds the API client, the query definitions and the
-two enum mirrors.
+`client/src/lib/tickets.ts` holds the API client, the query definitions, the
+two enum mirrors and `TicketSortBy`. Every column header is a sort control
+(`sortBy` / `sortDir` in the URL, the database doing the ordering); Last message
+reads as descending on a bare `/tickets`, because that *is* the default.
 
 Routing is React Router v7 in declarative mode. The login page is the
 reference for how a form should be built: `Card` around `Field` /
@@ -945,12 +1025,11 @@ and the form-level error in `errors.root` (see Conventions → Forms);
 
 Testing: Playwright is set up in `e2e/` with its own database and ports (see
 Testing above); specs cover login, sign-out, protected routes, roles, the API
-guards, deactivation and deletion. Vitest component tests cover both list pages
-(`UsersPage.test.tsx`, `TicketsPage.test.tsx`).
+guards, deactivation and deletion, and sorting on both lists. Vitest component
+tests cover both list pages (`UsersPage.test.tsx`, `TicketsPage.test.tsx`).
 
-Not built yet, in this feature's area: no ticket detail page, no reply composer
-and no sorting control, though `GET /api/tickets` accepts `?sort=` (3.6-3.12,
-3.9b); no job queue, so the webhook converts inline - `RawEmail.processedAt IS
+Not built yet, in this feature's area: no ticket detail page and no reply
+composer (3.6-3.12); no job queue, so the webhook converts inline - `RawEmail.processedAt IS
 NULL` is the seam a worker slots into (4.2, 4.5); no provider account or real
 inbound route (4.1); attachment metadata is stored but the bytes are dropped; no
 rate limit on the webhook (8.3); nothing outbound at all, so no student ever
