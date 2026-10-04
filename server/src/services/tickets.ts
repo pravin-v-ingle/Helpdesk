@@ -1,8 +1,10 @@
 import { Prisma } from "../generated/prisma/client.ts";
+import { MessageDirection } from "../generated/prisma/enums.ts";
 import type { TicketCategory, TicketStatus } from "../generated/prisma/enums.ts";
 import { prisma } from "../lib/prisma.ts";
 import { serializable } from "../lib/transaction.ts";
 import { HttpError } from "../middleware/error-handler.ts";
+import { addMessage } from "./inbound-email.ts";
 
 /**
  * The ticket shape the list endpoint returns.
@@ -290,6 +292,70 @@ export async function updateTicket(id: number, patch: TicketPatch): Promise<Publ
       data: { ...patch },
       select: ticketDetailSelect,
     });
+  });
+
+  return toPublicTicketDetail(ticket);
+}
+
+/**
+ * Who a reply is from. The acting user, read off the session by the route -
+ * never from the body, which would let any signed-in agent write a reply in a
+ * colleague's name.
+ */
+export type ReplyAuthor = { name: string; email: string };
+
+/**
+ * Append an agent's reply to a ticket and return the whole ticket in the
+ * detail shape, so the client replaces its copy rather than splicing a message
+ * into the thread it is holding and hoping the two agree - the same contract
+ * `updateTicket` has.
+ *
+ * **Stored only.** Nothing is emailed to the requester: there is no outbound
+ * sender yet (tasks 4.12-4.15), which is also why the message gets no
+ * `rfcMessageId` - task 4.13 generates one at send time so a student's reply
+ * threads back onto this ticket, and inventing one here would claim a message
+ * went out that never did. The page says as much under the composer.
+ *
+ * `fromEmail` and `fromName` are the agent's own, which makes the message the
+ * only record anywhere of who wrote what on a ticket - there is still no audit
+ * trail behind the status, category and assignee changes beside it. The
+ * address mail will eventually be *sent* from is `SUPPORT_EMAIL_ADDRESS`, an
+ * envelope concern rather than a question of authorship.
+ *
+ * Any signed-in user may reply to any ticket, including one assigned to
+ * somebody else, for the same reason they may read and reassign it.
+ *
+ * Serializable, like every other check-then-write here: the ticket's existence,
+ * the message and the `lastMessageAt` bump are one unit, so a ticket deleted
+ * between the check and the write cannot leave a message pointing at nothing -
+ * and the detail that comes back is read inside the transaction, so it is the
+ * thread with this reply already in it rather than a second read that could
+ * miss or double it.
+ */
+export async function addReply(
+  id: number,
+  author: ReplyAuthor,
+  body: string,
+): Promise<PublicTicketDetail> {
+  const ticket = await serializable(async (tx) => {
+    const exists = await tx.ticket.findUnique({ where: { id }, select: { id: true } });
+    if (!exists) throw new HttpError(404, "Ticket not found");
+
+    // The shared helper rather than a `message.create` here: it writes the
+    // message and moves `lastMessageAt` together, and a reply that did not
+    // move it would be invisible to the queue's default ordering, which reads
+    // the denormalised column rather than joining the thread.
+    await addMessage(tx, id, {
+      direction: MessageDirection.OUTBOUND,
+      fromEmail: author.email,
+      fromName: author.name,
+      body,
+    });
+
+    // `Ticket.body` is deliberately untouched: it is the *first* message
+    // denormalised, the original request, and a reply must not rewrite what
+    // the student asked for.
+    return tx.ticket.findUniqueOrThrow({ where: { id }, select: ticketDetailSelect });
   });
 
   return toPublicTicketDetail(ticket);

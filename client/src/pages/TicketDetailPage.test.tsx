@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router'
+import type { TicketReplyInput } from '@helpdesk/core/schemas/tickets'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthValue } from '../auth/auth-context.ts'
 import { ApiError, apiFetch, Role, type PublicUser } from '../lib/api.ts'
@@ -104,11 +105,13 @@ function mockApi({
   ticket = detail(),
   assignees = [bob, dana],
   patchFails,
+  replyFails,
   assigneesFail,
 }: {
   ticket?: TicketDetail
   assignees?: Assignee[]
   patchFails?: Error
+  replyFails?: Error
   assigneesFail?: Error
 } = {}) {
   mockedApiFetch.mockImplementation(async (path, options) => {
@@ -120,9 +123,35 @@ function mockApi({
       if (patchFails) throw patchFails
       return { ticket: applyPatch(ticket, options.body as TicketPatch, assignees) }
     }
+    if (options?.method === 'POST') {
+      if (replyFails) throw replyFails
+      return { ticket: withReply(ticket, (options.body as TicketReplyInput).body) }
+    }
     return { ticket }
   })
 }
+
+/**
+ * What the server does with a reply: appends an outbound message from the
+ * signed-in agent, moves `lastMessageAt` to it, and returns the whole ticket.
+ * The count comes back too, so the page has no reason to recompute it.
+ */
+function withReply(ticket: TicketDetail, body: string): TicketDetail {
+  const added = message({
+    id: 99,
+    direction: MessageDirection.OUTBOUND,
+    fromEmail: agent.email,
+    fromName: agent.name,
+    body,
+    createdAt: '2026-09-28T14:00:00.000Z',
+  })
+  const messages = [...ticket.messages, added]
+
+  return { ...ticket, messages, messageCount: messages.length, lastMessageAt: added.createdAt }
+}
+
+const composer = () => screen.getByRole('textbox', { name: 'Your reply' })
+const addReply = () => screen.getByRole('button', { name: 'Add reply' })
 
 /**
  * What the server does with a patch, so the fake answers the way the real
@@ -534,5 +563,118 @@ describe('TicketDetailPage', () => {
     await page.heading('Cannot see my enrolment')
 
     expect(screen.getByText('No messages on this ticket yet.')).toBeInTheDocument()
+    // The composer is how that ticket stops being empty, so it is there too.
+    expect(composer()).toBeInTheDocument()
+  })
+
+  it('adds a reply and shows it at the foot of the thread', async () => {
+    mockApi()
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await user.type(composer(), 'I have fixed your enrolment.')
+    await user.click(addReply())
+
+    await waitFor(() =>
+      expect(mockedApiFetch).toHaveBeenCalledWith('/api/tickets/7/messages', {
+        method: 'POST',
+        body: { body: 'I have fixed your enrolment.' },
+      }),
+    )
+
+    // The response is the whole ticket, written into the cache - so the thread,
+    // its count and the Last message row all move with no second request.
+    const messages = await waitFor(() => {
+      const list = page.messages()
+      expect(list).toHaveLength(3)
+      return list
+    })
+    const last = messages[2]!
+    expect(within(last).getByText('I have fixed your enrolment.')).toBeInTheDocument()
+    expect(within(last).getByText('Sent')).toBeInTheDocument()
+    expect(within(last).getByText('Bob Agent')).toBeInTheDocument()
+
+    expect(screen.getByRole('heading', { level: 2, name: 'Messages (3)' })).toBeInTheDocument()
+    expect(field('Last message')).toHaveTextContent(dateTime('2026-09-28T14:00:00.000Z'))
+
+    // Cleared, so the next reply starts from nothing rather than from a copy
+    // of the last one.
+    expect(composer()).toHaveValue('')
+    expect(requestedPaths().filter((path) => path === '/api/tickets/7')).toHaveLength(1)
+  })
+
+  it('refuses an empty reply without asking the server', async () => {
+    mockApi()
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await user.click(addReply())
+
+    // The shared schema's own sentence, which is what the server would have
+    // answered with had the request gone.
+    expect(await screen.findByText('Reply is required.')).toBeInTheDocument()
+    expect(requestedPaths()).not.toContain('/api/tickets/7/messages')
+    expect(page.messages()).toHaveLength(2)
+  })
+
+  it('refuses a reply of nothing but whitespace', async () => {
+    mockApi()
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await user.type(composer(), '   ')
+    await user.click(addReply())
+
+    expect(await screen.findByText('Reply is required.')).toBeInTheDocument()
+    expect(requestedPaths()).not.toContain('/api/tickets/7/messages')
+  })
+
+  it('keeps what was typed when the server refuses the reply', async () => {
+    mockApi({ replyFails: new ApiError(404, 'Ticket not found') })
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await user.type(composer(), 'A reply that will not land.')
+    await user.click(addReply())
+
+    expect(await screen.findByText('Ticket not found')).toBeInTheDocument()
+    // Nobody loses what they wrote to a failed request, and nothing was added
+    // to the thread.
+    expect(composer()).toHaveValue('A reply that will not land.')
+    expect(page.messages()).toHaveLength(2)
+  })
+
+  it('shows a generic message when the reply never reaches the server', async () => {
+    mockApi({ replyFails: new Error('Network Error') })
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await user.type(composer(), 'Hello.')
+    await user.click(addReply())
+
+    expect(
+      await screen.findByText('Could not reach the server. Please try again.'),
+    ).toBeInTheDocument()
+    expect(composer()).toHaveValue('Hello.')
+  })
+
+  /**
+   * Nothing is emailed until the outbound sender exists, and the composer says
+   * so - a button that claimed to send would be the one lie this page cannot
+   * afford.
+   */
+  it('says that the reply is not emailed to the requester', async () => {
+    mockApi()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    expect(
+      screen.getByText('Saved on the ticket. Nothing is emailed to Ada Lovelace yet.'),
+    ).toBeInTheDocument()
   })
 })

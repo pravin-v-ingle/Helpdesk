@@ -1,5 +1,7 @@
+import { ticketReplySchema } from "@helpdesk/core/schemas/tickets";
 import { Router, type Request } from "express";
 import { TicketCategory, TicketStatus } from "../generated/prisma/enums.ts";
+import { parseBody } from "../lib/validate.ts";
 import { requireAuth } from "../middleware/require-auth.ts";
 import { HttpError } from "../middleware/error-handler.ts";
 import * as tickets from "../services/tickets.ts";
@@ -33,6 +35,31 @@ ticketsRouter.patch("/:id", async (req, res) => {
   const patch = parseTicketPatch(req.body ?? {});
 
   res.json({ ticket: await tickets.updateTicket(id, patch) });
+});
+
+/**
+ * Add an agent's reply to a ticket. The body is `{ body }`, validated by
+ * `ticketReplySchema` from `@helpdesk/core` - the same schema the composer
+ * runs, so this 400 carries the message the form would have shown.
+ *
+ * Who the reply is from comes from the session, never the body: `req.user` is
+ * in place because `requireAuth` ran above, and taking a name off the wire
+ * would let any signed-in agent write in a colleague's name.
+ *
+ * 201 with the whole ticket in the detail shape. The reply changes three things
+ * the client is holding - the thread, the message count and `lastMessageAt` -
+ * so it replaces its copy rather than splicing one message into it, exactly as
+ * it does with a PATCH.
+ *
+ * Stored only: nothing is emailed to the requester until the outbound sender
+ * exists (tasks 4.12-4.15).
+ */
+ticketsRouter.post("/:id/messages", async (req, res) => {
+  const id = parseTicketId(req.params.id);
+  const { body } = parseBody(ticketReplySchema, req.body ?? {});
+  const author = req.user!;
+
+  res.status(201).json({ ticket: await tickets.addReply(id, author, body) });
 });
 
 // --- input validation -------------------------------------------------------

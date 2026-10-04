@@ -8,6 +8,7 @@
  * `UserStatus` in `lib/users.ts`. Each enum mirror lives beside the type that
  * uses it.
  */
+import type { TicketReplyInput } from '@helpdesk/core/schemas/tickets'
 import { queryOptions } from '@tanstack/react-query'
 import { apiFetch } from './api.ts'
 import type { SortDir } from './sorting.ts'
@@ -244,6 +245,26 @@ export async function updateTicket(id: number, patch: TicketPatch): Promise<Tick
   const { ticket } = await apiFetch<{ ticket: TicketDetail }>(`/api/tickets/${id}`, {
     method: 'PATCH',
     body: patch,
+  })
+  return ticket
+}
+
+/**
+ * Add a reply to a ticket's thread. Returns the whole ticket, like
+ * `updateTicket` above, so the caller replaces its cached copy rather than
+ * splicing a message into the thread it is holding.
+ *
+ * The body is the shared `ticketReplySchema` shape, which the composer
+ * validates with the same schema - so a 400 from here is a message the form
+ * would have shown, not a surprise.
+ *
+ * Stored only for now: the server records the reply on the ticket and emails
+ * nothing to the requester, because there is no outbound sender yet.
+ */
+export async function replyToTicket(id: number, input: TicketReplyInput): Promise<TicketDetail> {
+  const { ticket } = await apiFetch<{ ticket: TicketDetail }>(`/api/tickets/${id}/messages`, {
+    method: 'POST',
+    body: input,
   })
   return ticket
 }

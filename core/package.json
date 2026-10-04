@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "exports": {
+    "./schemas/tickets": "./src/schemas/tickets.ts",
     "./schemas/users": "./src/schemas/users.ts"
   },
   "scripts": {

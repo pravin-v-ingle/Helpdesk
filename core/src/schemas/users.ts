@@ -5,16 +5,7 @@
  * this package is imported by both sides.
  */
 import { z } from 'zod'
-
-/**
- * A text field with one message whether the key is missing or the wrong type.
- * The forms never send `undefined` (every field is defaulted to `''`), so this
- * is for the API, where the body is whatever the caller chose to send.
- */
-const text = (label: string) =>
-  z.string({
-    error: (issue) => (issue.input === undefined ? `${label} is required.` : `${label} must be text.`),
-  })
+import { text } from './text.ts'
 
 // --- fields -----------------------------------------------------------------
 // Declared once and composed into the schemas below, so create and edit cannot

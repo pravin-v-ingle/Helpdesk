@@ -1,7 +1,18 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ticketReplySchema, type TicketReplyInput } from '@helpdesk/core/schemas/tickets'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useForm } from 'react-hook-form'
 import { Link, useParams } from 'react-router'
 import { Badge } from '@/components/ui/badge'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
+import { Field, FieldError, FieldLabel } from '@/components/ui/field'
 import {
   Select,
   SelectContent,
@@ -10,6 +21,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Textarea } from '@/components/ui/textarea'
 import { TICKET_CATEGORY_LABELS, TICKET_STATUS_LABELS } from '../components/TicketsTable.tsx'
 import { ApiError } from '../lib/api.ts'
 import { assigneeListQueryOptions, type Assignee } from '../lib/assignees.ts'
@@ -17,6 +29,7 @@ import {
   isTicketCategory,
   isTicketStatus,
   MessageDirection,
+  replyToTicket,
   ticketDetailQueryOptions,
   ticketKeys,
   updateTicket,
@@ -75,10 +88,9 @@ function formatDateTime(iso: string) {
  * tickets is the agent's job, so this sits outside the `RequireRole` branch of
  * the route table.
  *
- * Two columns from `lg` up: the thread on the left, the ticket's own fields on
- * the right, where the three selects that write to it live. Below `lg` they
- * stack, thread first. The reply composer (task 3.12) belongs under the thread,
- * in the left column.
+ * Two columns from `lg` up: the thread and the reply composer on the left, the
+ * ticket's own fields on the right, where the three selects that write to it
+ * live. Below `lg` they stack, thread first.
  */
 export function TicketDetailPage() {
   const { id: idParam } = useParams()
@@ -153,26 +165,33 @@ function TicketView({ ticket }: { ticket: TicketDetail }) {
           than the viewport. `items-start` keeps the sidebar its own height,
           which is what lets it stick. */}
       <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start">
-        <section aria-label="Messages">
-          <h2 className="mb-4 text-lg font-semibold tracking-tight">
-            Messages ({ticket.messageCount})
-          </h2>
+        {/* The thread and the composer share the left column, in that order:
+            an agent reads before writing, and the reply belongs at the foot of
+            the conversation it answers rather than above it. */}
+        <div className="flex flex-col gap-8">
+          <section aria-label="Messages">
+            <h2 className="mb-4 text-lg font-semibold tracking-tight">
+              Messages ({ticket.messageCount})
+            </h2>
 
-          {ticket.messages.length === 0 ? (
-            // Not reachable through the inbound path, which creates a ticket
-            // and its first message together - but a page that renders nothing
-            // at all would be indistinguishable from one that failed.
-            <p className="text-sm text-muted-foreground">No messages on this ticket yet.</p>
-          ) : (
-            <ol className="flex flex-col gap-4">
-              {ticket.messages.map((message) => (
-                <li key={message.id}>
-                  <MessageCard message={message} />
-                </li>
-              ))}
-            </ol>
-          )}
-        </section>
+            {ticket.messages.length === 0 ? (
+              // Not reachable through the inbound path, which creates a ticket
+              // and its first message together - but a page that renders
+              // nothing at all would be indistinguishable from one that failed.
+              <p className="text-sm text-muted-foreground">No messages on this ticket yet.</p>
+            ) : (
+              <ol className="flex flex-col gap-4">
+                {ticket.messages.map((message) => (
+                  <li key={message.id}>
+                    <MessageCard message={message} />
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+
+          <ReplyComposer ticket={ticket} />
+        </div>
 
         {/* The ticket's own fields, second in the DOM as well as on the right:
             the thread is what an agent came to read, and stacking below `lg`
@@ -273,11 +292,24 @@ function useTicketUpdate(id: number) {
 
   return useMutation({
     mutationFn: (patch: TicketPatch) => updateTicket(id, patch),
-    onSuccess: (updated) => {
-      queryClient.setQueryData(ticketKeys.detail(updated.id), updated)
-      void queryClient.invalidateQueries({ queryKey: ticketKeys.lists() })
-    },
+    onSuccess: (updated) => storeTicket(queryClient, updated),
   })
+}
+
+/**
+ * What every write on this page does with the ticket it gets back, in one
+ * place so the three selects and the composer cannot disagree about it.
+ *
+ * The detail is stored rather than refetched - the response *is* the new truth,
+ * and a refetch would be a second request for something already in hand. The
+ * queue's cached pages are invalidated instead of patched: a reply moves
+ * `lastMessageAt` and the message count, which are two of the columns it sorts
+ * and shows, so the page it belongs on may no longer be the page it is cached
+ * under.
+ */
+function storeTicket(queryClient: QueryClient, ticket: TicketDetail) {
+  queryClient.setQueryData(ticketKeys.detail(ticket.id), ticket)
+  void queryClient.invalidateQueries({ queryKey: ticketKeys.lists() })
 }
 
 type TicketUpdate = ReturnType<typeof useTicketUpdate>
@@ -435,6 +467,107 @@ function MessageCard({ message }: { message: TicketMessage }) {
 }
 
 /**
+ * The reply composer: one textarea and a button, at the foot of the thread.
+ *
+ * **It does not send mail.** There is no outbound sender yet, so the reply is
+ * recorded on the ticket and the requester hears nothing - which the note in
+ * the footer says in as many words, because a button labelled "Send" that
+ * sends nothing is the one mistake this feature cannot afford. The wording
+ * promises only what the action does, the rule the delete confirmation follows.
+ *
+ * react-hook-form with the shared `ticketReplySchema`, so an empty reply is
+ * refused in the browser with the same sentence the server would have sent,
+ * and the server validates it again as the authority. Its own mutation rather
+ * than `useTicketUpdate`'s: a reply is a different request with a different
+ * failure, and a refusal belongs under the composer, not in the Details card
+ * on the other side of the page.
+ */
+function ReplyComposer({ ticket }: { ticket: TicketDetail }) {
+  const queryClient = useQueryClient()
+
+  const {
+    register,
+    handleSubmit,
+    setError,
+    reset,
+    formState: { errors, isSubmitting },
+  } = useForm<TicketReplyInput>({
+    resolver: zodResolver(ticketReplySchema),
+    // Defaulted to `''` rather than left undefined, so the textarea is never
+    // uncontrolled - the rule every form here follows.
+    defaultValues: { body: '' },
+  })
+
+  const mutation = useMutation({
+    mutationFn: (input: TicketReplyInput) => replyToTicket(ticket.id, input),
+    onSuccess: (updated) => storeTicket(queryClient, updated),
+  })
+
+  const onSubmit = handleSubmit(async (values) => {
+    try {
+      await mutation.mutateAsync(values)
+      // Cleared only once the reply is on the ticket. A refusal leaves the
+      // text where it is, so nobody loses what they wrote to a failed request.
+      reset({ body: '' })
+    } catch (err) {
+      // No field of its own to blame - the body was valid enough to send - so
+      // every refusal is form-level, the same treatment the dialogs give one.
+      setError('root', { message: err instanceof ApiError ? err.message : NETWORK_ERROR })
+    }
+  })
+
+  return (
+    <section aria-label="Reply">
+      <h2 className="mb-4 text-lg font-semibold tracking-tight">Reply</h2>
+
+      <Card>
+        {/* The form carries the card's own gap, or its two sections sit flush:
+            `Card` is a flex column and this element is now the child that
+            would have had the spacing. */}
+        <form
+          noValidate
+          onSubmit={(event) => void onSubmit(event)}
+          className="flex flex-col gap-(--card-spacing)"
+        >
+          <CardContent>
+            <Field data-invalid={errors.body ? true : undefined}>
+              <FieldLabel htmlFor="ticket-reply">Your reply</FieldLabel>
+              <Textarea
+                id="ticket-reply"
+                rows={6}
+                disabled={isSubmitting}
+                aria-invalid={errors.body ? true : undefined}
+                {...register('body')}
+              />
+              <FieldError errors={[errors.body]} />
+            </Field>
+
+            {/* Rendered only when there is something to say, the way the rest
+                of this page reports a refusal - an empty live region sitting
+                in the page permanently is one more thing for a screen reader
+                to walk past. */}
+            {errors.root && (
+              <p role="alert" className="mt-2 text-sm text-destructive">
+                {errors.root.message}
+              </p>
+            )}
+          </CardContent>
+
+          <CardFooter className="flex-wrap justify-between gap-4">
+            <p className="text-sm text-muted-foreground">
+              Saved on the ticket. Nothing is emailed to {ticket.requesterName} yet.
+            </p>
+            <Button type="submit" disabled={isSubmitting}>
+              {isSubmitting ? 'Adding…' : 'Add reply'}
+            </Button>
+          </CardFooter>
+        </form>
+      </Card>
+    </section>
+  )
+}
+
+/**
  * The page's shape before the first response. Hidden from assistive technology
  * behind a `role="status"` line, and carrying none of the real content's
  * accessible names, so a test waiting for the heading cannot match it.
@@ -454,6 +587,10 @@ function TicketSkeleton() {
             {Array.from({ length: 2 }, (_, i) => (
               <Skeleton key={i} className="h-32 w-full rounded-xl" />
             ))}
+            {/* The composer's own block: it is part of the page's shape, so
+                leaving it out would make the thread grow downwards when the
+                response lands. */}
+            <Skeleton className="mt-4 h-44 w-full rounded-xl" />
           </div>
           <Skeleton className="h-80 w-full rounded-xl" />
         </div>

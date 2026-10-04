@@ -175,7 +175,9 @@ e2e/             Playwright end-to-end tests
   2. Register a new file in `core/package.json` `exports`
      (`"./schemas/<resource>": "./src/schemas/<resource>.ts"`); imports are
      `@helpdesk/core/schemas/<resource>` on both sides, never a relative path
-     into `core/`.
+     into `core/`. `schemas/text.ts` is the exception that proves it: the
+     `text(label)` helper both resource schemas build on, unexported from the
+     package and imported relatively *within* `core/` only.
   3. Client: `useForm<XInput>({ resolver: zodResolver(xSchema) })` and the
      API client function takes `XInput`. Server: `parseBody(xSchema,
      req.body ?? {})` in the route (`server/src/lib/validate.ts`), which
@@ -818,6 +820,57 @@ everyone. A ticket nobody can take off a colleague who is away is a ticket
 nobody answers. The acting user is not recorded; tickets have no audit trail
 yet, so nothing says who closed one or who reassigned it.
 
+### Replying to a ticket
+
+`POST /api/tickets/:id/messages` appends an agent's reply. The body is
+`{ body }`, validated by `ticketReplySchema` in `@helpdesk/core` - the composer
+runs the same schema, so the 400 carries the sentence the form would have shown
+(`Reply is required.`, `Reply must be at most 10,000 characters.`). The reply is
+trimmed before the length rules run, so whitespace is the empty reply it really
+is. Ten thousand characters is far under the inbound path's 256 KB body
+truncation *and* under `express.json()`'s own 100 KB default, which would
+otherwise refuse a long reply with a message written by Express.
+
+It returns **201 and the whole ticket in the detail shape**, the same contract
+`PATCH` has and for the same reason: a reply changes the thread, the message
+count and `lastMessageAt`, so the client replaces its copy rather than splicing
+a message into it.
+
+Four things the endpoint deliberately does:
+
+- **The author is the session, never the body.** `req.user` supplies `fromName`
+  and `fromEmail`, so no signed-in agent can write in a colleague's name. That
+  makes the message the only record anywhere of who did what to a ticket -
+  status, category and assignee changes still go unattributed. The address mail
+  will eventually be *sent* from is `SUPPORT_EMAIL_ADDRESS`, an envelope
+  question rather than a question of authorship.
+- **It writes through `addMessage`** (`services/inbound-email.ts`), the inbound
+  path's helper, which moves `lastMessageAt` with the message. A reply that did
+  not move it would be invisible to the queue's default ordering, which reads
+  the denormalised column rather than joining the thread.
+- **`Ticket.body` is untouched.** It is the *first* message denormalised - the
+  original request - and a reply must not rewrite what the student asked for.
+- **`rfcMessageId` stays null and nothing is emailed.** Task 4.13 mints a
+  Message-ID at send time so a student's reply threads back; inventing one here
+  would claim a message went out that never did.
+
+Existence check, write and the re-read of the detail share one `serializable()`
+transaction, so the response is the thread with the reply already in it. Same
+auth as the rest: `requireAuth`, no role check, no ownership check - any
+signed-in user may reply to any ticket.
+
+On the client the composer sits under the thread in the detail page's left
+column: one textarea, an **Add reply** button, react-hook-form over the shared
+schema, and its own mutation rather than `useTicketUpdate`'s, so a refusal
+reports under the textarea instead of in the Details card on the other side of
+the page. A refusal leaves what was typed where it is; only a stored reply
+clears the field. Both writes on the page funnel their response through
+`storeTicket()`, which puts the detail in the cache and invalidates
+`ticketKeys.lists()`. The footer says the reply is saved on the ticket and that
+nothing is emailed to the requester yet, and the button says "Add reply" rather
+than "Send" - the same rule the delete confirmation follows: the wording
+promises only what the action does.
+
 `GET /api/assignees` (`routes/assignees.ts`) is the list of people a ticket can
 go to: active accounts only, `{ id, name, email, role }`, by name, unpaginated.
 It is `requireAuth` with no role check, which is the whole reason it exists -
@@ -1021,8 +1074,11 @@ and nothing that writes to a ticket; Phase 4 has its inbound half (4.3-4.11,
 less the queue).
 
 Shared: `core/` holds `createUserSchema`, validated by the dialog and by
-`POST /api/users` alike. There is no ticket schema in `core/`: no form posts a
-ticket, and the webhook body is a provider's shape, validated in its adapter.
+`POST /api/users` alike, and `ticketReplySchema`, validated by the reply
+composer and by `POST /api/tickets/:id/messages` alike. Nothing else about a
+ticket is in `core/`: no form posts a ticket, the webhook body is a provider's
+shape validated in its adapter, and a PATCH carries three server-owned enum
+fields the route reads one key at a time.
 
 Working on the server: Postgres and Prisma with migrations, Better Auth over
 database-backed sessions, `requireAuth()` and `requireRole()`, `GET /api/me`,
@@ -1032,9 +1088,11 @@ SendGrid adapter behind one `InboundEmail` contract, and the ticket queue at
 `GET /api/tickets` - signed-in, not admin-only. `Ticket`, `Message` and
 `RawEmail` are the first application-owned tables; `Ticket` also carries `body`,
 `bodyHtml` and a nullable `assignedToId` relation to `User`. `GET
-/api/tickets/:id` reads one ticket with its thread and `PATCH /api/tickets/:id`
-changes its assignee, status or category, with `GET /api/assignees` listing who
-it can go to - both signed-in, neither admin-only. `bun run email:test` exercises the whole inbound path locally
+/api/tickets/:id` reads one ticket with its thread, `PATCH /api/tickets/:id`
+changes its assignee, status or category and `POST /api/tickets/:id/messages`
+appends an agent's reply - stored on the ticket, emailed nowhere - with `GET
+/api/assignees` listing who a ticket can go to; all signed-in, none
+admin-only. `bun run email:test` exercises the whole inbound path locally
 without a provider account. See Tickets and inbound email above for the webhook's
 position above `express.json()`, the dedupe key, the two-phase write and the
 threading rules.
@@ -1091,9 +1149,10 @@ thread first - it is what an agent came to read, and it is first in the DOM too,
 so the visual order and the reading order agree. The sidebar is
 `lg:sticky lg:top-6`, which is what `lg:items-start` on the grid is for, and the
 thread column is `minmax(0,1fr)` so an unbroken line in a message cannot widen
-the page. The skeleton repeats the same grid, so nothing jumps sideways when the
-response lands; the reply composer (3.12) goes under the thread, in the left
-column.
+the page. The skeleton repeats the same grid - and carries a block for the
+composer too - so nothing jumps sideways or grows downwards when the response
+lands. The reply composer sits under the thread in the left column; see
+Replying to a ticket above.
 
 The Details card is a description list - Status, Category, Assigned to,
 Requester, Opened, Last message - with the label above each value, because a
@@ -1125,14 +1184,14 @@ match nothing and read as unassigned when it is not.
 a deliberately thinner shape.
 Message bodies are plain text in a `whitespace-pre-wrap` paragraph; there is no
 `dangerouslySetInnerHTML` anywhere and nothing to put in one, because the
-endpoint does not send `bodyHtml`. The page reads its id from `useParams` and
+endpoint does not send `bodyHtml` - and a reply is stored as the plain text it
+was typed as, so the thread stays one kind of thing. The page reads its id from `useParams` and
 checks it before querying, so `/tickets/abc` shows "Ticket not found" without a
 request - and a 404 from the server shows the same message, since the two are
 the same miss. Its skeleton follows the list's rule: a `role="status"`
 announcement with the shapes `aria-hidden` beside it, carrying none of the real
 content's accessible names, so a test waiting on the `<h1>` cannot match it.
-Not admin-gated, for the same reason `/tickets` is not. The reply composer
-(3.12) is the one thing still missing from this page.
+Not admin-gated, for the same reason `/tickets` is not.
 
 Routing is React Router v7 in declarative mode. The login page is the
 reference for how a form should be built: `Card` around `Field` /
@@ -1148,9 +1207,10 @@ the ticket detail page yet. Vitest component tests cover both list pages and the
 detail page (`UsersPage.test.tsx`, `TicketsPage.test.tsx`,
 `TicketDetailPage.test.tsx`).
 
-Not built yet, in this feature's area: no agent reply (3.8, 3.12), so a ticket's
-thread only ever grows inbound; no record of who changed what, so nothing says
-who closed a ticket or reassigned it; no job queue, so the webhook converts inline - `RawEmail.processedAt IS
+Not built yet, in this feature's area: an agent's reply is stored on the ticket
+but never sent, so a student still hears nothing back; no record of who changed
+what, so nothing says who closed a ticket or reassigned it - a reply is the one
+action that names its author, through the message's own `fromName`; no job queue, so the webhook converts inline - `RawEmail.processedAt IS
 NULL` is the seam a worker slots into (4.2, 4.5); no provider account or real
 inbound route (4.1); attachment metadata is stored but the bytes are dropped; no
 rate limit on the webhook (8.3); nothing outbound at all, so no student ever
