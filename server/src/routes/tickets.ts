@@ -22,6 +22,26 @@ ticketsRouter.get("/:id", async (req, res) => {
   res.json({ ticket: await tickets.getTicket(parseTicketId(req.params.id)) });
 });
 
+/**
+ * Assign a ticket, or unassign it with `{ "assignedToId": null }`. Returns the
+ * whole ticket, the same shape `GET /:id` does, so the client replaces what it
+ * is holding rather than patching its copy and hoping the two agree.
+ *
+ * One field for now. Status and category join it in task 3.7/3.11, which is
+ * why the body is read a field at a time rather than handed to the service
+ * whole: each one is server-owned in its own way and arrives separately.
+ */
+ticketsRouter.patch("/:id", async (req, res) => {
+  const id = parseTicketId(req.params.id);
+  const body = req.body ?? {};
+
+  if (!Object.hasOwn(body, "assignedToId")) {
+    throw new HttpError(400, "assignedToId is required");
+  }
+
+  res.json({ ticket: await tickets.assignTicket(id, parseAssigneeOrThrow(body.assignedToId)) });
+});
+
 // --- input validation -------------------------------------------------------
 // The same shape as `routes/users.ts`: a `Record` keyed by the union for each
 // enum so adding a member is a compile error until it is accepted here, and
@@ -121,6 +141,24 @@ function isSortDir(value: unknown): value is tickets.SortDir {
 function parseSortDirOrThrow(value: unknown): tickets.SortDir {
   if (isSortDir(value)) return value;
   throw new HttpError(400, `sortDir must be ${Object.keys(SORT_DIRS).join(" or ")}`);
+}
+
+/**
+ * The assignee from a PATCH body: a user id, or `null` to unassign. `null` is
+ * a real value here rather than a missing one, which is why the route checks
+ * the key is present before calling this - "take it off them" and "say nothing
+ * about the assignee" are different instructions, and only one of them writes.
+ *
+ * Whether that id names someone who can hold a ticket is the service's
+ * question; this only decides whether the body is the right shape.
+ */
+function parseAssigneeOrThrow(value: unknown): string | null {
+  if (value === null) return null;
+  // No trimming: an id is matched exactly, so a value needing a trim is not
+  // one of ours. An empty string means the client sent a blank select rather
+  // than the unassign it meant, which is worth saying out loud.
+  if (typeof value === "string" && value.length > 0) return value;
+  throw new HttpError(400, "assignedToId must be a user id or null");
 }
 
 /**

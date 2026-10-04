@@ -1,9 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthValue } from '../auth/auth-context.ts'
 import { ApiError, apiFetch, Role, type PublicUser } from '../lib/api.ts'
+import type { Assignee } from '../lib/assignees.ts'
 import {
   MessageDirection,
   TicketCategory,
@@ -74,6 +76,79 @@ function detail(overrides: Partial<TicketDetail> = {}): TicketDetail {
   }
 }
 
+/**
+ * The people `/api/assignees` offers. An admin is in the list on purpose: the
+ * server returns every active account, because an admin works tickets too.
+ */
+const bob: Assignee = {
+  id: 'user-agent',
+  name: 'Bob Agent',
+  email: 'bob@example.com',
+  role: Role.AGENT,
+}
+
+const dana: Assignee = {
+  id: 'user-admin',
+  name: 'Dana Admin',
+  email: 'dana@example.com',
+  role: Role.ADMIN,
+}
+
+/**
+ * Answers both endpoints the page uses, by path and method - the detail GET,
+ * the assignee list, and the assignment PATCH, which echoes the ticket back
+ * with the new assignee the way the server does.
+ */
+function mockApi({
+  ticket = detail(),
+  assignees = [bob, dana],
+  patchFails,
+  assigneesFail,
+}: {
+  ticket?: TicketDetail
+  assignees?: Assignee[]
+  patchFails?: Error
+  assigneesFail?: Error
+} = {}) {
+  mockedApiFetch.mockImplementation(async (path, options) => {
+    if (path === '/api/assignees') {
+      if (assigneesFail) throw assigneesFail
+      return { assignees }
+    }
+    if (options?.method === 'PATCH') {
+      if (patchFails) throw patchFails
+      const { assignedToId } = options.body as { assignedToId: string | null }
+      const next = assignees.find((assignee) => assignee.id === assignedToId) ?? null
+      return {
+        ticket: {
+          ...ticket,
+          assignedTo: next && { id: next.id, name: next.name, email: next.email },
+        },
+      }
+    }
+    return { ticket }
+  })
+}
+
+/** The assignee control, which is a Radix select named by the term beside it. */
+function assigneeSelect() {
+  return screen.getByRole('combobox', { name: 'Assigned to' })
+}
+
+/**
+ * Picks an option in the assignee select. Opened from the keyboard: under jsdom
+ * the first pointer click on a trigger is dropped whenever an earlier test in
+ * the file used user-event, so a click-to-open passes alone and fails in the
+ * suite. Copied from `UsersPage.test.tsx`'s `choose`.
+ */
+async function choose(user: ReturnType<typeof userEvent.setup>, option: string) {
+  // The control is disabled until the list of candidates has arrived.
+  await waitFor(() => expect(assigneeSelect()).toBeEnabled())
+  assigneeSelect().focus()
+  await user.keyboard('{ArrowDown}')
+  await user.click(await screen.findByRole('option', { name: option }))
+}
+
 function renderPage(url = '/tickets/7') {
   // `retry: false` so an error test is not waiting on the app client's retry.
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -122,7 +197,7 @@ describe('TicketDetailPage', () => {
   })
 
   it('shows a skeleton until the response, then the ticket and its thread', async () => {
-    mockedApiFetch.mockResolvedValue({ ticket: detail() })
+    mockApi()
     const page = renderPage()
 
     // The placeholder is announced, but is not the heading a test waits for.
@@ -134,7 +209,7 @@ describe('TicketDetailPage', () => {
 
     expect(screen.getByText('Open')).toBeInTheDocument()
     expect(field('Requester')).toHaveTextContent('Ada Lovelace (ada@example.com)')
-    expect(field('Assigned to')).toHaveTextContent('Nobody')
+    expect(assigneeSelect()).toHaveTextContent('Unassigned')
     expect(field('Opened')).toHaveTextContent(dateTime('2026-09-28T09:00:00.000Z'))
     expect(field('Opened')?.querySelector('time')).toHaveAttribute(
       'datetime',
@@ -158,15 +233,17 @@ describe('TicketDetailPage', () => {
   })
 
   it('requests the ticket in the URL and passes the query\'s abort signal', async () => {
-    mockedApiFetch.mockResolvedValue({ ticket: detail({ id: 42 }) })
+    mockApi({ ticket: detail({ id: 42 }) })
     const page = renderPage('/tickets/42')
     await page.heading('Cannot see my enrolment')
 
-    expect(mockedApiFetch).toHaveBeenCalledTimes(1)
     expect(mockedApiFetch).toHaveBeenCalledWith(
       '/api/tickets/42',
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
+    // The assignee list is the page's only other request, and it is a GET
+    // with no parameters.
+    await waitFor(() => expect(requestedPaths()).toEqual(['/api/tickets/42', '/api/assignees']))
   })
 
   /**
@@ -176,7 +253,7 @@ describe('TicketDetailPage', () => {
    * either way without the scrambling.
    */
   it('renders messages in the order the server returned them', async () => {
-    mockedApiFetch.mockResolvedValue({ ticket: detail({ messages: [reply, message()] }) })
+    mockApi({ ticket: detail({ messages: [reply, message()] }) })
     const page = renderPage()
     await page.heading('Cannot see my enrolment')
 
@@ -186,9 +263,7 @@ describe('TicketDetailPage', () => {
   })
 
   it('shows the category when a ticket has one, and an em dash when it has not', async () => {
-    mockedApiFetch.mockResolvedValue({
-      ticket: detail({ category: TicketCategory.REFUND_REQUEST }),
-    })
+    mockApi({ ticket: detail({ category: TicketCategory.REFUND_REQUEST }) })
     const page = renderPage()
     await page.heading('Cannot see my enrolment')
 
@@ -196,21 +271,121 @@ describe('TicketDetailPage', () => {
     expect(screen.queryByText('—')).not.toBeInTheDocument()
   })
 
-  it('names the assigned agent when there is one', async () => {
-    mockedApiFetch.mockResolvedValue({
-      ticket: detail({
-        assignedTo: { id: 'user-agent', name: 'Bob Agent', email: 'bob@example.com' },
-      }),
-    })
+  it('names who holds the ticket and offers everyone the server returns', async () => {
+    mockApi({ ticket: detail({ assignedTo: bob }) })
+    const user = userEvent.setup()
     const page = renderPage()
     await page.heading('Cannot see my enrolment')
 
-    expect(field('Assigned to')).toHaveTextContent('Bob Agent')
-    expect(screen.queryByText('Nobody')).not.toBeInTheDocument()
+    expect(assigneeSelect()).toHaveTextContent('Bob Agent')
+
+    await waitFor(() => expect(assigneeSelect()).toBeEnabled())
+    assigneeSelect().focus()
+    await user.keyboard('{ArrowDown}')
+
+    // Unassigned first, then the people - the admin among them, because an
+    // admin works tickets too.
+    expect((await screen.findAllByRole('option')).map((option) => option.textContent)).toEqual([
+      'Unassigned',
+      'Bob Agent',
+      'Dana Admin',
+    ])
+  })
+
+  it('assigns the ticket to someone and shows the result', async () => {
+    mockApi()
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await choose(user, 'Dana Admin')
+
+    expect(mockedApiFetch).toHaveBeenCalledWith('/api/tickets/7', {
+      method: 'PATCH',
+      body: { assignedToId: 'user-admin' },
+    })
+    // The response is written straight into the detail cache, so the control
+    // reads back from the server's answer rather than from a local guess.
+    await waitFor(() => expect(assigneeSelect()).toHaveTextContent('Dana Admin'))
+  })
+
+  it('takes a ticket back off someone', async () => {
+    mockApi({ ticket: detail({ assignedTo: bob }) })
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await choose(user, 'Unassigned')
+
+    expect(mockedApiFetch).toHaveBeenCalledWith('/api/tickets/7', {
+      method: 'PATCH',
+      body: { assignedToId: null },
+    })
+    await waitFor(() => expect(assigneeSelect()).toHaveTextContent('Unassigned'))
+  })
+
+  /**
+   * The control shows the ticket's assignee, not what was clicked, so a refusal
+   * needs no undo: the value never moved off who actually holds it.
+   */
+  it('keeps the current assignee when the server refuses the change', async () => {
+    mockApi({
+      ticket: detail({ assignedTo: bob }),
+      patchFails: new ApiError(400, 'A deactivated user cannot be assigned tickets.'),
+    })
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await choose(user, 'Dana Admin')
+
+    expect(
+      await screen.findByText('A deactivated user cannot be assigned tickets.'),
+    ).toBeInTheDocument()
+    expect(assigneeSelect()).toHaveTextContent('Bob Agent')
+  })
+
+  it('shows a generic message when the assignment never reaches the server', async () => {
+    mockApi({ patchFails: new Error('Network Error') })
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await choose(user, 'Bob Agent')
+
+    expect(
+      await screen.findByText('Could not reach the server. Please try again.'),
+    ).toBeInTheDocument()
+  })
+
+  /**
+   * An assignee who has since been deactivated has left the assignable list.
+   * Without them being added back as an option the select would match nothing
+   * and render blank - saying the ticket is unassigned when it is not.
+   */
+  it('still names an assignee the list no longer offers', async () => {
+    const gone = { id: 'user-gone', name: 'Carol Former', email: 'carol@example.com' }
+    mockApi({ ticket: detail({ assignedTo: gone }), assignees: [bob] })
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await waitFor(() => expect(assigneeSelect()).toHaveTextContent('Carol Former'))
+  })
+
+  it('says so when the list of people cannot be loaded', async () => {
+    mockApi({ assigneesFail: new ApiError(500, 'Internal server error') })
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    expect(
+      await screen.findByText('Could not load the list of people to assign to.'),
+    ).toBeInTheDocument()
+    // The ticket itself loaded, so the thread is still there to read.
+    expect(page.messages()).toHaveLength(2)
   })
 
   it('links back to the queue', async () => {
-    mockedApiFetch.mockResolvedValue({ ticket: detail() })
+    mockApi()
     renderPage()
 
     expect(screen.getByRole('link', { name: '← All tickets' })).toHaveAttribute('href', '/tickets')
@@ -254,7 +429,7 @@ describe('TicketDetailPage', () => {
   })
 
   it('still renders a ticket with no messages', async () => {
-    mockedApiFetch.mockResolvedValue({ ticket: detail({ messages: [] }) })
+    mockApi({ ticket: detail({ messages: [] }) })
     const page = renderPage()
     await page.heading('Cannot see my enrolment')
 

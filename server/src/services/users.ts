@@ -132,6 +132,48 @@ export async function listUsers(options: ListUsersOptions) {
   return { users, total };
 }
 
+/**
+ * The shape the ticket assignee picker needs - a name to show and an id to
+ * write back. Narrower than `publicUserSelect` on purpose: this list is
+ * readable by every signed-in user, not just admins, so it carries nothing
+ * about an account's state. The role rides along because two people can share
+ * a name and an admin in the list should not look like a second agent.
+ */
+const assignableUserSelect = {
+  id: true,
+  name: true,
+  email: true,
+  role: true,
+} as const satisfies Prisma.UserSelect;
+
+export type AssignableUser = Prisma.UserGetPayload<{ select: typeof assignableUserSelect }>;
+
+/**
+ * Everyone a ticket can be given to: the active accounts, by name.
+ *
+ * `active: true` is the whole filter because a deleted row always carries
+ * `active: false` (see `deleteUser`), so the one gate covers both removals -
+ * the same single gate every other access check consults.
+ *
+ * Admins are included alongside agents. Working tickets is not an admin
+ * privilege, but it is not forbidden them either: `/api/tickets` is open to
+ * every signed-in user and the nav bar shows an admin the queue, so an admin
+ * who picks a ticket up must be able to be the one holding it.
+ *
+ * Unpaginated, unlike `listUsers`. A helpdesk's staff list is tens of rows and
+ * a picker has to show all of them at once; revisit if this ever outgrows a
+ * dropdown.
+ */
+export async function listAssignableUsers(): Promise<AssignableUser[]> {
+  return prisma.user.findMany({
+    where: { active: true },
+    select: assignableUserSelect,
+    // `id` breaks the tie, so two people with the same name hold a stable
+    // order rather than swapping places between requests.
+    orderBy: [{ name: "asc" }, { id: "asc" }],
+  });
+}
+
 export async function getUser(id: string, db: Prisma.TransactionClient = prisma) {
   const user = await db.user.findUnique({
     where: { id },

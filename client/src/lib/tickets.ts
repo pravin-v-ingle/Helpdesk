@@ -215,3 +215,15 @@ export async function getTicket(id: number, signal?: AbortSignal): Promise<Ticke
   const { ticket } = await apiFetch<{ ticket: TicketDetail }>(`/api/tickets/${id}`, { signal })
   return ticket
 }
+
+/**
+ * Give a ticket to someone, or take it back with `null`. Returns the whole
+ * ticket, so the caller replaces its cached copy rather than patching it.
+ */
+export async function assignTicket(id: number, assignedToId: string | null): Promise<TicketDetail> {
+  const { ticket } = await apiFetch<{ ticket: TicketDetail }>(`/api/tickets/${id}`, {
+    method: 'PATCH',
+    body: { assignedToId },
+  })
+  return ticket
+}

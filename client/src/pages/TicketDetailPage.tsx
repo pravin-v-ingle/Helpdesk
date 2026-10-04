@@ -1,13 +1,23 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { TICKET_CATEGORY_LABELS, TICKET_STATUS_LABELS } from '../components/TicketsTable.tsx'
 import { ApiError } from '../lib/api.ts'
+import { assigneeListQueryOptions, type Assignee } from '../lib/assignees.ts'
 import {
+  assignTicket,
   MessageDirection,
   ticketDetailQueryOptions,
+  ticketKeys,
   type TicketDetail,
   type TicketMessage,
 } from '../lib/tickets.ts'
@@ -19,6 +29,9 @@ const NOT_FOUND = 'Ticket not found'
 
 /** What the Category line shows for a ticket the classifier has not reached. */
 const UNCATEGORISED = '—'
+
+/** The assignee select's "nobody" option. Radix refuses an empty value. */
+const UNASSIGNED = 'unassigned'
 
 /**
  * Which way a message travelled, from the agent's point of view. "Received"
@@ -57,9 +70,9 @@ function formatDateTime(iso: string) {
  * tickets is the agent's job, so this sits outside the `RequireRole` branch of
  * the route table.
  *
- * Read-only for now. The status and category controls are task 3.11 and the
- * reply composer 3.12; both belong here, which is why the header leaves room
- * beside the badges.
+ * Assignment is the one thing this page writes (`AssigneeSelect` below). The
+ * status and category controls are task 3.11 and the reply composer 3.12; both
+ * belong here, which is why the header leaves room beside the badges.
  */
 export function TicketDetailPage() {
   const { id: idParam } = useParams()
@@ -134,9 +147,11 @@ function TicketView({ ticket }: { ticket: TicketDetail }) {
           </dd>
 
           <dt className="text-muted-foreground">Assigned to</dt>
-          {/* Every ticket is unassigned today - inbound mail names no one to
-              give it to - so this is the normal case, not an edge. */}
-          <dd>{ticket.assignedTo?.name ?? <span className="text-muted-foreground">Nobody</span>}</dd>
+          {/* Every ticket arrives unassigned - inbound mail names no one to
+              give it to - so Unassigned is the normal state, not an edge. */}
+          <dd>
+            <AssigneeSelect ticket={ticket} />
+          </dd>
 
           <dt className="text-muted-foreground">Opened</dt>
           <dd>
@@ -172,6 +187,87 @@ function TicketView({ ticket }: { ticket: TicketDetail }) {
       </section>
     </>
   )
+}
+
+/**
+ * Who holds this ticket, as a control. Any signed-in user may hand a ticket to
+ * anyone, themselves included - the server takes the same view, and the list of
+ * candidates comes from `/api/assignees` rather than the admin-only
+ * `/api/users`.
+ *
+ * The write returns the whole ticket, which is written straight into the detail
+ * query's cache: no refetch, and no second shape to keep in step. The ticket
+ * list carries no assignee column, so nothing there needs invalidating.
+ */
+function AssigneeSelect({ ticket }: { ticket: TicketDetail }) {
+  const queryClient = useQueryClient()
+  const assignees = useQuery(assigneeListQueryOptions())
+
+  const mutation = useMutation({
+    mutationFn: (assignedToId: string | null) => assignTicket(ticket.id, assignedToId),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(ticketKeys.detail(updated.id), updated)
+    },
+  })
+
+  const error = mutation.error
+    ? mutation.error instanceof ApiError
+      ? mutation.error.message
+      : NETWORK_ERROR
+    : undefined
+
+  return (
+    <div className="flex flex-col gap-1">
+      <Select
+        // Radix refuses an empty value, hence the sentinel - the same device
+        // the queue's "all" filters use.
+        value={ticket.assignedTo?.id ?? UNASSIGNED}
+        // The value shown is the ticket's, so a refused change goes back to
+        // who actually holds it as soon as the server says no.
+        onValueChange={(value) => mutation.mutate(value === UNASSIGNED ? null : value)}
+        disabled={assignees.isPending || mutation.isPending}
+      >
+        <SelectTrigger id="ticket-assignee" aria-label="Assigned to" className="w-60">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
+          {assigneeOptions(assignees.data, ticket.assignedTo).map((assignee) => (
+            <SelectItem key={assignee.id} value={assignee.id}>
+              {assignee.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      {assignees.isError && (
+        <p role="alert" className="text-sm text-destructive">
+          Could not load the list of people to assign to.
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The options to offer, which is the assignable list plus - if it is not
+ * already there - whoever currently holds the ticket. An assignee who has since
+ * been deactivated has left that list, and without this the select would match
+ * no option and render blank, quietly saying the ticket is unassigned when it
+ * is not.
+ */
+function assigneeOptions(
+  assignees: Assignee[] | undefined,
+  current: TicketDetail['assignedTo'],
+): Pick<Assignee, 'id' | 'name'>[] {
+  const options = assignees ?? []
+  if (current === null || options.some((assignee) => assignee.id === current.id)) return options
+  return [...options, current]
 }
 
 function MessageCard({ message }: { message: TicketMessage }) {

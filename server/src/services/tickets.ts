@@ -1,6 +1,7 @@
 import { Prisma } from "../generated/prisma/client.ts";
 import type { TicketCategory, TicketStatus } from "../generated/prisma/enums.ts";
 import { prisma } from "../lib/prisma.ts";
+import { serializable } from "../lib/transaction.ts";
 import { HttpError } from "../middleware/error-handler.ts";
 
 /**
@@ -218,6 +219,57 @@ export async function getTicket(id: number): Promise<PublicTicketDetail> {
   const ticket = await prisma.ticket.findUnique({ where: { id }, select: ticketDetailSelect });
   if (!ticket) throw new HttpError(404, "Ticket not found");
 
-  const { _count, ...rest } = ticket;
-  return { ...rest, messageCount: _count.messages };
+  return toPublicTicketDetail(ticket);
+}
+
+function toPublicTicketDetail({ _count, ...ticket }: TicketDetailRow): PublicTicketDetail {
+  return { ...ticket, messageCount: _count.messages };
+}
+
+/**
+ * Give a ticket to someone, or take it back off them with `null`.
+ *
+ * Any signed-in user may do this to any ticket, including one already held by
+ * somebody else: the same reasoning as the queue being readable by everyone -
+ * a helpdesk hands work around, and a ticket nobody can take off a colleague
+ * who is away is a ticket nobody answers. The acting user is not recorded;
+ * there is no audit trail on tickets yet.
+ *
+ * The check and the write share a serializable transaction, as every other
+ * check-then-write in this codebase does: without it an account deactivated
+ * between the two would still end up holding a ticket, and `active` is the one
+ * gate everything else trusts.
+ */
+export async function assignTicket(
+  id: number,
+  assignedToId: string | null,
+): Promise<PublicTicketDetail> {
+  const ticket = await serializable(async (tx) => {
+    if (assignedToId !== null) {
+      const assignee = await tx.user.findUnique({
+        where: { id: assignedToId },
+        select: { active: true },
+      });
+
+      // A 400 rather than a 404: the ticket in the path exists, and it is the
+      // body that names someone who cannot have it. The messages are
+      // user-facing sentences, like the shared schemas' - the client shows
+      // them as they arrive.
+      if (!assignee) throw new HttpError(400, "That user no longer exists.");
+      if (!assignee.active) {
+        throw new HttpError(400, "A deactivated user cannot be assigned tickets.");
+      }
+    }
+
+    const exists = await tx.ticket.findUnique({ where: { id }, select: { id: true } });
+    if (!exists) throw new HttpError(404, "Ticket not found");
+
+    return tx.ticket.update({
+      where: { id },
+      data: { assignedToId },
+      select: ticketDetailSelect,
+    });
+  });
+
+  return toPublicTicketDetail(ticket);
 }
