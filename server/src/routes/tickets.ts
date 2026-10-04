@@ -23,23 +23,16 @@ ticketsRouter.get("/:id", async (req, res) => {
 });
 
 /**
- * Assign a ticket, or unassign it with `{ "assignedToId": null }`. Returns the
+ * Change a ticket's assignee, status or category. A partial update: the keys
+ * present are the instruction and anything absent is left alone. Returns the
  * whole ticket, the same shape `GET /:id` does, so the client replaces what it
  * is holding rather than patching its copy and hoping the two agree.
- *
- * One field for now. Status and category join it in task 3.7/3.11, which is
- * why the body is read a field at a time rather than handed to the service
- * whole: each one is server-owned in its own way and arrives separately.
  */
 ticketsRouter.patch("/:id", async (req, res) => {
   const id = parseTicketId(req.params.id);
-  const body = req.body ?? {};
+  const patch = parseTicketPatch(req.body ?? {});
 
-  if (!Object.hasOwn(body, "assignedToId")) {
-    throw new HttpError(400, "assignedToId is required");
-  }
-
-  res.json({ ticket: await tickets.assignTicket(id, parseAssigneeOrThrow(body.assignedToId)) });
+  res.json({ ticket: await tickets.updateTicket(id, patch) });
 });
 
 // --- input validation -------------------------------------------------------
@@ -89,14 +82,26 @@ function parseStatusOrThrow(value: unknown): TicketStatus {
   throw new HttpError(400, `status must be ${Object.keys(STATUSES).join(", ")}`);
 }
 
-/**
- * The categories, plus `none` for the unclassified - which is every ticket
- * until the Phase 5 classifier exists, so the filter is useless without it.
- */
-const CATEGORY_FILTERS: Record<tickets.CategoryFilter, true> = {
+/** Every `TicketCategory`, keyed by itself for the reason `STATUSES` is. */
+const CATEGORIES: Record<TicketCategory, true> = {
   [TicketCategory.GENERAL_QUESTION]: true,
   [TicketCategory.TECHNICAL_QUESTION]: true,
   [TicketCategory.REFUND_REQUEST]: true,
+};
+
+function isTicketCategory(value: unknown): value is TicketCategory {
+  return typeof value === "string" && Object.hasOwn(CATEGORIES, value);
+}
+
+/**
+ * The categories, plus `none` for the unclassified - which is every ticket
+ * until the Phase 5 classifier exists, so the filter is useless without it.
+ * Built from `CATEGORIES` rather than listed again, so the filter vocabulary
+ * cannot drift from the enum it extends. `none` is a query-string device only:
+ * a body says `null`.
+ */
+const CATEGORY_FILTERS: Record<tickets.CategoryFilter, true> = {
+  ...CATEGORIES,
   none: true,
 };
 
@@ -144,10 +149,48 @@ function parseSortDirOrThrow(value: unknown): tickets.SortDir {
 }
 
 /**
- * The assignee from a PATCH body: a user id, or `null` to unassign. `null` is
- * a real value here rather than a missing one, which is why the route checks
- * the key is present before calling this - "take it off them" and "say nothing
- * about the assignee" are different instructions, and only one of them writes.
+ * A PATCH body, read one key at a time. Presence is the instruction: a key
+ * that is there is a change, a key that is absent leaves that field alone -
+ * which is why `null` on the two nullable fields is a value rather than a way
+ * of saying nothing, and why `Object.hasOwn` rather than `!== undefined` is
+ * what decides. An explicit `{ "status": undefined }` cannot survive JSON
+ * anyway, but the distinction is the API's to keep.
+ *
+ * An empty patch is refused rather than quietly returning the ticket
+ * unchanged: a request that asks for nothing is a client bug, and a 200 would
+ * hide it.
+ */
+function parseTicketPatch(body: Record<string, unknown>): tickets.TicketPatch {
+  const patch: tickets.TicketPatch = {};
+
+  if (Object.hasOwn(body, "assignedToId")) {
+    patch.assignedToId = parseAssigneeOrThrow(body.assignedToId);
+  }
+  if (Object.hasOwn(body, "status")) {
+    patch.status = parseStatusOrThrow(body.status);
+  }
+  if (Object.hasOwn(body, "category")) {
+    patch.category = parseCategoryValueOrThrow(body.category);
+  }
+
+  if (Object.keys(patch).length === 0) {
+    throw new HttpError(400, "Supply at least one of assignedToId, status or category");
+  }
+  return patch;
+}
+
+/**
+ * A category from a PATCH body: one of the enum, or `null` to clear the
+ * classification. Not `none` - that is the list filter's spelling, and a JSON
+ * body has a real null to use.
+ */
+function parseCategoryValueOrThrow(value: unknown): TicketCategory | null {
+  if (value === null || isTicketCategory(value)) return value;
+  throw new HttpError(400, `category must be ${Object.keys(CATEGORIES).join(", ")} or null`);
+}
+
+/**
+ * The assignee from a PATCH body: a user id, or `null` to unassign.
  *
  * Whether that id names someone who can hold a ticket is the service's
  * question; this only decides whether the body is the right shape.

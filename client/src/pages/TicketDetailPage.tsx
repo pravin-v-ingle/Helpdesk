@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router'
 import { Badge } from '@/components/ui/badge'
-import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Select,
   SelectContent,
@@ -14,12 +14,15 @@ import { TICKET_CATEGORY_LABELS, TICKET_STATUS_LABELS } from '../components/Tick
 import { ApiError } from '../lib/api.ts'
 import { assigneeListQueryOptions, type Assignee } from '../lib/assignees.ts'
 import {
-  assignTicket,
+  isTicketCategory,
+  isTicketStatus,
   MessageDirection,
   ticketDetailQueryOptions,
   ticketKeys,
+  updateTicket,
   type TicketDetail,
   type TicketMessage,
+  type TicketPatch,
 } from '../lib/tickets.ts'
 
 const NETWORK_ERROR = 'Could not reach the server. Please try again.'
@@ -27,11 +30,13 @@ const NETWORK_ERROR = 'Could not reach the server. Please try again.'
 /** The same message the server sends for a 404, shown for an unusable id too. */
 const NOT_FOUND = 'Ticket not found'
 
-/** What the Category line shows for a ticket the classifier has not reached. */
-const UNCATEGORISED = '—'
-
-/** The assignee select's "nobody" option. Radix refuses an empty value. */
+/**
+ * The two selects' "no value" options. Radix refuses an empty value, so each
+ * needs a sentinel; `none` is the one the queue's category filter already uses
+ * on the wire, and the body sends `null` for both.
+ */
 const UNASSIGNED = 'unassigned'
+const NO_CATEGORY = 'none'
 
 /**
  * Which way a message travelled, from the agent's point of view. "Received"
@@ -70,9 +75,10 @@ function formatDateTime(iso: string) {
  * tickets is the agent's job, so this sits outside the `RequireRole` branch of
  * the route table.
  *
- * Assignment is the one thing this page writes (`AssigneeSelect` below). The
- * status and category controls are task 3.11 and the reply composer 3.12; both
- * belong here, which is why the header leaves room beside the badges.
+ * Two columns from `lg` up: the thread on the left, the ticket's own fields on
+ * the right, where the three selects that write to it live. Below `lg` they
+ * stack, thread first. The reply composer (task 3.12) belongs under the thread,
+ * in the left column.
  */
 export function TicketDetailPage() {
   const { id: idParam } = useParams()
@@ -123,98 +129,231 @@ export function TicketDetailPage() {
 }
 
 function TicketView({ ticket }: { ticket: TicketDetail }) {
+  // One mutation behind all three controls, so a write in flight disables the
+  // others and every refusal reports in the same place, below the list.
+  const update = useTicketUpdate(ticket.id)
+
+  const error = update.error
+    ? update.error instanceof ApiError
+      ? update.error.message
+      : NETWORK_ERROR
+    : undefined
+
   return (
     <>
-      <header className="mb-8">
-        <h1 className="text-2xl font-semibold tracking-tight">{ticket.subject}</h1>
+      {/* The subject spans both columns: it names the whole page, not the
+          thread, and wrapping it inside one column would make the other look
+          like a second page beside it. */}
+      <h1 className="mb-6 text-2xl font-semibold tracking-tight">{ticket.subject}</h1>
 
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <Badge>{TICKET_STATUS_LABELS[ticket.status]}</Badge>
-          {ticket.category === null ? (
-            <span className="text-sm text-muted-foreground">{UNCATEGORISED}</span>
+      {/* Two columns from `lg` up - the thread, then the ticket's own fields -
+          and one stacked column below it, where a 22rem sidebar beside the
+          messages would leave neither enough room. `minmax(0,1fr)` rather than
+          `1fr` so a long unbroken line in a message cannot push the grid wider
+          than the viewport. `items-start` keeps the sidebar its own height,
+          which is what lets it stick. */}
+      <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start">
+        <section aria-label="Messages">
+          <h2 className="mb-4 text-lg font-semibold tracking-tight">
+            Messages ({ticket.messageCount})
+          </h2>
+
+          {ticket.messages.length === 0 ? (
+            // Not reachable through the inbound path, which creates a ticket
+            // and its first message together - but a page that renders nothing
+            // at all would be indistinguishable from one that failed.
+            <p className="text-sm text-muted-foreground">No messages on this ticket yet.</p>
           ) : (
-            <Badge variant="secondary">{TICKET_CATEGORY_LABELS[ticket.category]}</Badge>
+            <ol className="flex flex-col gap-4">
+              {ticket.messages.map((message) => (
+                <li key={message.id}>
+                  <MessageCard message={message} />
+                </li>
+              ))}
+            </ol>
           )}
-        </div>
+        </section>
 
-        {/* A description list rather than prose: each fact has a label an
-            assistive technology can read with its value. */}
-        <dl className="mt-4 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-[auto_1fr] sm:gap-y-1">
-          <dt className="text-muted-foreground">Requester</dt>
-          <dd>
-            {ticket.requesterName}{' '}
-            <span className="text-muted-foreground">({ticket.requesterEmail})</span>
-          </dd>
+        {/* The ticket's own fields, second in the DOM as well as on the right:
+            the thread is what an agent came to read, and stacking below `lg`
+            should put it first. Sticky, so the controls stay reachable however
+            long the thread gets - `top-6` matches the page's own padding. */}
+        <aside aria-label="Ticket details" className="lg:sticky lg:top-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Details</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {/* A description list rather than prose: each fact has a label an
+                  assistive technology reads with its value - and the three that
+                  are editable are rows like the three that are not, rather than
+                  a separate toolbar saying the same things twice. Label above
+                  value, because a 22rem column has no room for two. */}
+              <dl className="flex flex-col gap-4 text-sm">
+                <div className="flex flex-col gap-1.5">
+                  <dt className="text-muted-foreground">Status</dt>
+                  <dd>
+                    <StatusSelect ticket={ticket} update={update} />
+                  </dd>
+                </div>
 
-          <dt className="text-muted-foreground">Assigned to</dt>
-          {/* Every ticket arrives unassigned - inbound mail names no one to
-              give it to - so Unassigned is the normal state, not an edge. */}
-          <dd>
-            <AssigneeSelect ticket={ticket} />
-          </dd>
+                <div className="flex flex-col gap-1.5">
+                  <dt className="text-muted-foreground">Category</dt>
+                  {/* Null until the Phase 5 classifier runs, so Uncategorised
+                      is where every ticket starts and clearing one back to it
+                      is allowed. */}
+                  <dd>
+                    <CategorySelect ticket={ticket} update={update} />
+                  </dd>
+                </div>
 
-          <dt className="text-muted-foreground">Opened</dt>
-          <dd>
-            <time dateTime={ticket.createdAt}>{formatDateTime(ticket.createdAt)}</time>
-          </dd>
+                <div className="flex flex-col gap-1.5">
+                  <dt className="text-muted-foreground">Assigned to</dt>
+                  {/* Every ticket arrives unassigned - inbound mail names no
+                      one to give it to - so Unassigned is the normal state,
+                      not an edge. */}
+                  <dd>
+                    <AssigneeSelect ticket={ticket} update={update} />
+                  </dd>
+                </div>
 
-          <dt className="text-muted-foreground">Last message</dt>
-          <dd>
-            <time dateTime={ticket.lastMessageAt}>{formatDateTime(ticket.lastMessageAt)}</time>
-          </dd>
-        </dl>
-      </header>
+                <div className="flex flex-col gap-1.5">
+                  <dt className="text-muted-foreground">Requester</dt>
+                  <dd>
+                    {ticket.requesterName}{' '}
+                    <span className="break-words text-muted-foreground">
+                      ({ticket.requesterEmail})
+                    </span>
+                  </dd>
+                </div>
 
-      <section aria-label="Messages">
-        <h2 className="mb-4 text-lg font-semibold tracking-tight">
-          Messages ({ticket.messageCount})
-        </h2>
+                <div className="flex flex-col gap-1.5">
+                  <dt className="text-muted-foreground">Opened</dt>
+                  <dd>
+                    <time dateTime={ticket.createdAt}>{formatDateTime(ticket.createdAt)}</time>
+                  </dd>
+                </div>
 
-        {ticket.messages.length === 0 ? (
-          // Not reachable through the inbound path, which creates a ticket and
-          // its first message together - but a page that renders nothing at all
-          // would be indistinguishable from one that failed.
-          <p className="text-sm text-muted-foreground">No messages on this ticket yet.</p>
-        ) : (
-          <ol className="flex flex-col gap-4">
-            {ticket.messages.map((message) => (
-              <li key={message.id}>
-                <MessageCard message={message} />
-              </li>
-            ))}
-          </ol>
-        )}
-      </section>
+                <div className="flex flex-col gap-1.5">
+                  <dt className="text-muted-foreground">Last message</dt>
+                  <dd>
+                    <time dateTime={ticket.lastMessageAt}>
+                      {formatDateTime(ticket.lastMessageAt)}
+                    </time>
+                  </dd>
+                </div>
+              </dl>
+
+              {error && (
+                <p role="alert" className="mt-4 text-sm text-destructive">
+                  {error}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </aside>
+      </div>
     </>
   )
 }
 
 /**
- * Who holds this ticket, as a control. Any signed-in user may hand a ticket to
- * anyone, themselves included - the server takes the same view, and the list of
+ * The one write this page makes. Every control goes through it, so they cannot
+ * disagree about what is in flight or where a refusal is reported.
+ *
+ * The response is the whole ticket, written straight into the detail query's
+ * cache: no refetch, and no second shape to keep in step. The queue's cached
+ * pages are a different matter - they show status and category, and a change
+ * here can move a ticket out of the filter a page was built from - so those are
+ * invalidated rather than patched. `ticketKeys.lists()` and not `all`, which
+ * would throw away the fresh detail this just stored.
+ */
+function useTicketUpdate(id: number) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (patch: TicketPatch) => updateTicket(id, patch),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(ticketKeys.detail(updated.id), updated)
+      void queryClient.invalidateQueries({ queryKey: ticketKeys.lists() })
+    },
+  })
+}
+
+type TicketUpdate = ReturnType<typeof useTicketUpdate>
+
+/**
+ * Where the ticket is in its lifecycle. Every transition is offered, CLOSED
+ * back to OPEN included: a student's reply reopens a closed ticket by itself
+ * (see the inbound rules), so an agent may do by hand what the mail does on its
+ * own.
+ */
+function StatusSelect({ ticket, update }: { ticket: TicketDetail; update: TicketUpdate }) {
+  return (
+    <Select
+      // The ticket's own value, not what was last clicked, so a refusal needs
+      // no undo - the control never left the truth.
+      value={ticket.status}
+      onValueChange={(value) => {
+        if (isTicketStatus(value)) update.mutate({ status: value })
+      }}
+      disabled={update.isPending}
+    >
+      <SelectTrigger id="ticket-status" aria-label="Status" className="w-full">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {Object.entries(TICKET_STATUS_LABELS).map(([value, label]) => (
+          <SelectItem key={value} value={value}>
+            {label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
+/**
+ * What the ticket is about. `Uncategorised` is a real option rather than a
+ * placeholder: it is where every ticket starts until the Phase 5 classifier
+ * runs, and an agent who miscategorised one has to be able to put it back.
+ */
+function CategorySelect({ ticket, update }: { ticket: TicketDetail; update: TicketUpdate }) {
+  return (
+    <Select
+      value={ticket.category ?? NO_CATEGORY}
+      onValueChange={(value) => {
+        if (value === NO_CATEGORY) update.mutate({ category: null })
+        else if (isTicketCategory(value)) update.mutate({ category: value })
+      }}
+      disabled={update.isPending}
+    >
+      <SelectTrigger id="ticket-category" aria-label="Category" className="w-full">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={NO_CATEGORY}>Uncategorised</SelectItem>
+        {Object.entries(TICKET_CATEGORY_LABELS).map(([value, label]) => (
+          <SelectItem key={value} value={value}>
+            {label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
+/**
+ * Who holds this ticket. Any signed-in user may hand a ticket to anyone,
+ * themselves included - the server takes the same view, and the list of
  * candidates comes from `/api/assignees` rather than the admin-only
  * `/api/users`.
  *
- * The write returns the whole ticket, which is written straight into the detail
- * query's cache: no refetch, and no second shape to keep in step. The ticket
- * list carries no assignee column, so nothing there needs invalidating.
+ * The only control with a second request behind it, which is why the failure of
+ * that list is reported here rather than with the write errors below the list.
  */
-function AssigneeSelect({ ticket }: { ticket: TicketDetail }) {
-  const queryClient = useQueryClient()
+function AssigneeSelect({ ticket, update }: { ticket: TicketDetail; update: TicketUpdate }) {
   const assignees = useQuery(assigneeListQueryOptions())
-
-  const mutation = useMutation({
-    mutationFn: (assignedToId: string | null) => assignTicket(ticket.id, assignedToId),
-    onSuccess: (updated) => {
-      queryClient.setQueryData(ticketKeys.detail(updated.id), updated)
-    },
-  })
-
-  const error = mutation.error
-    ? mutation.error instanceof ApiError
-      ? mutation.error.message
-      : NETWORK_ERROR
-    : undefined
 
   return (
     <div className="flex flex-col gap-1">
@@ -222,12 +361,12 @@ function AssigneeSelect({ ticket }: { ticket: TicketDetail }) {
         // Radix refuses an empty value, hence the sentinel - the same device
         // the queue's "all" filters use.
         value={ticket.assignedTo?.id ?? UNASSIGNED}
-        // The value shown is the ticket's, so a refused change goes back to
-        // who actually holds it as soon as the server says no.
-        onValueChange={(value) => mutation.mutate(value === UNASSIGNED ? null : value)}
-        disabled={assignees.isPending || mutation.isPending}
+        onValueChange={(value) =>
+          update.mutate({ assignedToId: value === UNASSIGNED ? null : value })
+        }
+        disabled={assignees.isPending || update.isPending}
       >
-        <SelectTrigger id="ticket-assignee" aria-label="Assigned to" className="w-60">
+        <SelectTrigger id="ticket-assignee" aria-label="Assigned to" className="w-full">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -243,11 +382,6 @@ function AssigneeSelect({ ticket }: { ticket: TicketDetail }) {
       {assignees.isError && (
         <p role="alert" className="text-sm text-destructive">
           Could not load the list of people to assign to.
-        </p>
-      )}
-      {error && (
-        <p role="alert" className="text-sm text-destructive">
-          {error}
         </p>
       )}
     </div>
@@ -311,17 +445,17 @@ function TicketSkeleton() {
       <p role="status" className="sr-only">
         Loading ticket…
       </p>
+      {/* The same two columns as the content, so nothing jumps sideways when
+          the response lands. */}
       <div aria-hidden="true">
-        <Skeleton className="h-8 w-96 max-w-full" />
-        <Skeleton className="mt-3 h-5 w-20 rounded-full" />
-        <div className="mt-4 flex flex-col gap-2">
-          <Skeleton className="h-4 w-64" />
-          <Skeleton className="h-4 w-48" />
-        </div>
-        <div className="mt-8 flex flex-col gap-4">
-          {Array.from({ length: 2 }, (_, i) => (
-            <Skeleton key={i} className="h-32 w-full rounded-xl" />
-          ))}
+        <Skeleton className="mb-6 h-8 w-96 max-w-full" />
+        <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start">
+          <div className="flex flex-col gap-4">
+            {Array.from({ length: 2 }, (_, i) => (
+              <Skeleton key={i} className="h-32 w-full rounded-xl" />
+            ))}
+          </div>
+          <Skeleton className="h-80 w-full rounded-xl" />
         </div>
       </div>
     </div>

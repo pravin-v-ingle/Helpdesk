@@ -12,6 +12,7 @@ import {
   TicketStatus,
   type TicketDetail,
   type TicketMessage,
+  type TicketPatch,
 } from '../lib/tickets.ts'
 import { TicketDetailPage } from './TicketDetailPage.tsx'
 
@@ -117,34 +118,50 @@ function mockApi({
     }
     if (options?.method === 'PATCH') {
       if (patchFails) throw patchFails
-      const { assignedToId } = options.body as { assignedToId: string | null }
-      const next = assignees.find((assignee) => assignee.id === assignedToId) ?? null
-      return {
-        ticket: {
-          ...ticket,
-          assignedTo: next && { id: next.id, name: next.name, email: next.email },
-        },
-      }
+      return { ticket: applyPatch(ticket, options.body as TicketPatch, assignees) }
     }
     return { ticket }
   })
 }
 
-/** The assignee control, which is a Radix select named by the term beside it. */
-function assigneeSelect() {
-  return screen.getByRole('combobox', { name: 'Assigned to' })
+/**
+ * What the server does with a patch, so the fake answers the way the real
+ * endpoint does: the keys present are applied, the rest of the ticket is
+ * untouched, and the whole ticket comes back.
+ */
+function applyPatch(ticket: TicketDetail, patch: TicketPatch, assignees: Assignee[]): TicketDetail {
+  const next = { ...ticket }
+  if ('assignedToId' in patch) {
+    const found = assignees.find((assignee) => assignee.id === patch.assignedToId)
+    next.assignedTo = found ? { id: found.id, name: found.name, email: found.email } : null
+  }
+  if (patch.status !== undefined) next.status = patch.status
+  if ('category' in patch) next.category = patch.category ?? null
+  return next
 }
 
+/** One of the three controls, each a Radix select named by the term beside it. */
+function control(label: 'Status' | 'Category' | 'Assigned to') {
+  return screen.getByRole('combobox', { name: label })
+}
+
+const assigneeSelect = () => control('Assigned to')
+
 /**
- * Picks an option in the assignee select. Opened from the keyboard: under jsdom
+ * Picks an option in one of the selects. Opened from the keyboard: under jsdom
  * the first pointer click on a trigger is dropped whenever an earlier test in
  * the file used user-event, so a click-to-open passes alone and fails in the
  * suite. Copied from `UsersPage.test.tsx`'s `choose`.
  */
-async function choose(user: ReturnType<typeof userEvent.setup>, option: string) {
-  // The control is disabled until the list of candidates has arrived.
-  await waitFor(() => expect(assigneeSelect()).toBeEnabled())
-  assigneeSelect().focus()
+async function choose(
+  user: ReturnType<typeof userEvent.setup>,
+  label: 'Status' | 'Category' | 'Assigned to',
+  option: string,
+) {
+  // The assignee control is disabled until its list of candidates arrives, and
+  // all three are disabled while a write is in flight.
+  await waitFor(() => expect(control(label)).toBeEnabled())
+  control(label).focus()
   await user.keyboard('{ArrowDown}')
   await user.click(await screen.findByRole('option', { name: option }))
 }
@@ -207,7 +224,8 @@ describe('TicketDetailPage', () => {
     await page.heading('Cannot see my enrolment')
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
 
-    expect(screen.getByText('Open')).toBeInTheDocument()
+    expect(control('Status')).toHaveTextContent('Open')
+    expect(control('Category')).toHaveTextContent('Uncategorised')
     expect(field('Requester')).toHaveTextContent('Ada Lovelace (ada@example.com)')
     expect(assigneeSelect()).toHaveTextContent('Unassigned')
     expect(field('Opened')).toHaveTextContent(dateTime('2026-09-28T09:00:00.000Z'))
@@ -262,13 +280,95 @@ describe('TicketDetailPage', () => {
     expect(bodies[1]).toContain('I cannot see my enrolment.')
   })
 
-  it('shows the category when a ticket has one, and an em dash when it has not', async () => {
-    mockApi({ ticket: detail({ category: TicketCategory.REFUND_REQUEST }) })
+  it('shows the ticket\'s own status and category in the controls', async () => {
+    mockApi({
+      ticket: detail({ status: TicketStatus.CLOSED, category: TicketCategory.REFUND_REQUEST }),
+    })
     const page = renderPage()
     await page.heading('Cannot see my enrolment')
 
-    expect(screen.getByText('Refund request')).toBeInTheDocument()
-    expect(screen.queryByText('—')).not.toBeInTheDocument()
+    expect(control('Status')).toHaveTextContent('Closed')
+    expect(control('Category')).toHaveTextContent('Refund request')
+  })
+
+  it('changes the status', async () => {
+    mockApi()
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await choose(user, 'Status', 'Resolved')
+
+    expect(mockedApiFetch).toHaveBeenCalledWith('/api/tickets/7', {
+      method: 'PATCH',
+      body: { status: 'RESOLVED' },
+    })
+    await waitFor(() => expect(control('Status')).toHaveTextContent('Resolved'))
+  })
+
+  /**
+   * Every transition is offered, including back out of CLOSED: a student's
+   * reply reopens a closed ticket by itself, so an agent may do the same.
+   */
+  it('reopens a closed ticket', async () => {
+    mockApi({ ticket: detail({ status: TicketStatus.CLOSED }) })
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await choose(user, 'Status', 'Open')
+
+    expect(mockedApiFetch).toHaveBeenCalledWith('/api/tickets/7', {
+      method: 'PATCH',
+      body: { status: 'OPEN' },
+    })
+    await waitFor(() => expect(control('Status')).toHaveTextContent('Open'))
+  })
+
+  it('classifies an uncategorised ticket', async () => {
+    mockApi()
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await choose(user, 'Category', 'Technical question')
+
+    expect(mockedApiFetch).toHaveBeenCalledWith('/api/tickets/7', {
+      method: 'PATCH',
+      body: { category: 'TECHNICAL_QUESTION' },
+    })
+    await waitFor(() => expect(control('Category')).toHaveTextContent('Technical question'))
+  })
+
+  /** `null`, not the list filter's `none`: a JSON body has a real null to use. */
+  it('clears a category back to uncategorised', async () => {
+    mockApi({ ticket: detail({ category: TicketCategory.GENERAL_QUESTION }) })
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await choose(user, 'Category', 'Uncategorised')
+
+    expect(mockedApiFetch).toHaveBeenCalledWith('/api/tickets/7', {
+      method: 'PATCH',
+      body: { category: null },
+    })
+    await waitFor(() => expect(control('Category')).toHaveTextContent('Uncategorised'))
+  })
+
+  it('keeps the current status when the server refuses the change', async () => {
+    mockApi({
+      ticket: detail({ status: TicketStatus.OPEN }),
+      patchFails: new ApiError(400, 'status must be OPEN, RESOLVED, CLOSED'),
+    })
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await choose(user, 'Status', 'Closed')
+
+    expect(await screen.findByText('status must be OPEN, RESOLVED, CLOSED')).toBeInTheDocument()
+    expect(control('Status')).toHaveTextContent('Open')
   })
 
   it('names who holds the ticket and offers everyone the server returns', async () => {
@@ -298,7 +398,7 @@ describe('TicketDetailPage', () => {
     const page = renderPage()
     await page.heading('Cannot see my enrolment')
 
-    await choose(user, 'Dana Admin')
+    await choose(user, 'Assigned to', 'Dana Admin')
 
     expect(mockedApiFetch).toHaveBeenCalledWith('/api/tickets/7', {
       method: 'PATCH',
@@ -315,7 +415,7 @@ describe('TicketDetailPage', () => {
     const page = renderPage()
     await page.heading('Cannot see my enrolment')
 
-    await choose(user, 'Unassigned')
+    await choose(user, 'Assigned to', 'Unassigned')
 
     expect(mockedApiFetch).toHaveBeenCalledWith('/api/tickets/7', {
       method: 'PATCH',
@@ -337,7 +437,7 @@ describe('TicketDetailPage', () => {
     const page = renderPage()
     await page.heading('Cannot see my enrolment')
 
-    await choose(user, 'Dana Admin')
+    await choose(user, 'Assigned to', 'Dana Admin')
 
     expect(
       await screen.findByText('A deactivated user cannot be assigned tickets.'),
@@ -351,7 +451,7 @@ describe('TicketDetailPage', () => {
     const page = renderPage()
     await page.heading('Cannot see my enrolment')
 
-    await choose(user, 'Bob Agent')
+    await choose(user, 'Assigned to', 'Bob Agent')
 
     expect(
       await screen.findByText('Could not reach the server. Please try again.'),

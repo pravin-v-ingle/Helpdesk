@@ -179,7 +179,14 @@ export type TicketListResponse = {
  */
 export const ticketKeys = {
   all: ['tickets'] as const,
-  list: (params: TicketListParams) => [...ticketKeys.all, 'list', params] as const,
+  /**
+   * The prefix every cached list page shares. What a write invalidates: a
+   * changed status or category moves a ticket between filters and changes what
+   * the queue shows, while `all` would needlessly include the detail the write
+   * has just put a fresh copy of in the cache.
+   */
+  lists: () => [...ticketKeys.all, 'list'] as const,
+  list: (params: TicketListParams) => [...ticketKeys.lists(), params] as const,
   detail: (id: number) => [...ticketKeys.all, 'detail', id] as const,
 }
 
@@ -217,13 +224,26 @@ export async function getTicket(id: number, signal?: AbortSignal): Promise<Ticke
 }
 
 /**
- * Give a ticket to someone, or take it back with `null`. Returns the whole
- * ticket, so the caller replaces its cached copy rather than patching it.
+ * What an agent may change about a ticket, mirroring `TicketPatch` in
+ * `server/src/services/tickets.ts`. Every key is optional and absent means
+ * "leave it alone", so `null` on the two nullable fields is a real
+ * instruction - unassign, or clear the classification - rather than a way of
+ * saying nothing.
  */
-export async function assignTicket(id: number, assignedToId: string | null): Promise<TicketDetail> {
+export type TicketPatch = {
+  assignedToId?: string | null
+  status?: TicketStatus
+  category?: TicketCategory | null
+}
+
+/**
+ * Change a ticket. Returns the whole ticket, so the caller replaces its cached
+ * copy rather than patching it and hoping the two agree.
+ */
+export async function updateTicket(id: number, patch: TicketPatch): Promise<TicketDetail> {
   const { ticket } = await apiFetch<{ ticket: TicketDetail }>(`/api/tickets/${id}`, {
     method: 'PATCH',
-    body: { assignedToId },
+    body: patch,
   })
   return ticket
 }

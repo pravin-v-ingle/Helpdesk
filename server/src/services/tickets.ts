@@ -227,7 +227,23 @@ function toPublicTicketDetail({ _count, ...ticket }: TicketDetailRow): PublicTic
 }
 
 /**
- * Give a ticket to someone, or take it back off them with `null`.
+ * What an agent may change about a ticket. Every key is optional and absent
+ * means "leave it alone", so a present key is always an instruction - which is
+ * why `assignedToId: null` and `category: null` are meaningful values rather
+ * than a way of saying nothing. The route builds this one key at a time from
+ * the keys the body actually carries.
+ *
+ * `status` is not nullable: a ticket is always somewhere in its lifecycle.
+ */
+export type TicketPatch = {
+  assignedToId?: string | null;
+  status?: TicketStatus;
+  category?: TicketCategory | null;
+};
+
+/**
+ * Change a ticket's assignee, status or category - any combination, in one
+ * write, so a UI that eventually changes two at once cannot half-apply them.
  *
  * Any signed-in user may do this to any ticket, including one already held by
  * somebody else: the same reasoning as the queue being readable by everyone -
@@ -235,19 +251,21 @@ function toPublicTicketDetail({ _count, ...ticket }: TicketDetailRow): PublicTic
  * who is away is a ticket nobody answers. The acting user is not recorded;
  * there is no audit trail on tickets yet.
  *
- * The check and the write share a serializable transaction, as every other
- * check-then-write in this codebase does: without it an account deactivated
- * between the two would still end up holding a ticket, and `active` is the one
- * gate everything else trusts.
+ * Status and category need no check beyond being members of their enums, which
+ * the route has already established: every transition is allowed, including
+ * CLOSED back to OPEN, because a student replying to a closed ticket reopens it
+ * anyway (see the inbound rules) and an agent may do by hand what the mail does
+ * by itself. The assignee is the one field that can name something impossible,
+ * so it is the only one with a check here - and the check and the write share a
+ * serializable transaction, as every other check-then-write in this codebase
+ * does: without it an account deactivated between the two would still end up
+ * holding a ticket, and `active` is the one gate everything else trusts.
  */
-export async function assignTicket(
-  id: number,
-  assignedToId: string | null,
-): Promise<PublicTicketDetail> {
+export async function updateTicket(id: number, patch: TicketPatch): Promise<PublicTicketDetail> {
   const ticket = await serializable(async (tx) => {
-    if (assignedToId !== null) {
+    if (patch.assignedToId != null) {
       const assignee = await tx.user.findUnique({
-        where: { id: assignedToId },
+        where: { id: patch.assignedToId },
         select: { active: true },
       });
 
@@ -264,9 +282,12 @@ export async function assignTicket(
     const exists = await tx.ticket.findUnique({ where: { id }, select: { id: true } });
     if (!exists) throw new HttpError(404, "Ticket not found");
 
+    // Spread rather than assigned field by field: an absent key must not reach
+    // Prisma at all, because `{ status: undefined }` and no `status` mean the
+    // same thing to it today but the distinction is ours to keep, not its.
     return tx.ticket.update({
       where: { id },
-      data: { assignedToId },
+      data: { ...patch },
       select: ticketDetailSelect,
     });
   });

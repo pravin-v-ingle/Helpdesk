@@ -782,29 +782,41 @@ a positive integer is a **404, not a 400** (`parseTicketId` in `routes/tickets.t
 detail page has to render anyway. A query parameter is different - there the
 field name is worth saying, which is what `parseIntParam` does.
 
-### Assigning a ticket
+### Changing a ticket
 
-`PATCH /api/tickets/:id` takes `{ assignedToId }` - a user id, or `null` to
-unassign - and returns the whole ticket in the detail shape, so the client
-replaces its copy rather than patching it and hoping the two agree. Status and
-category join this body in 3.7/3.11, which is why the route reads one field at a
-time rather than handing the body to the service whole.
+`PATCH /api/tickets/:id` takes any of `assignedToId`, `status` and `category`
+and returns the whole ticket in the detail shape, so the client replaces its
+copy rather than patching it and hoping the two agree. One write for all three,
+so a UI that eventually changes two at once cannot half-apply them.
 
-`null` is a value, not an absence: the route checks the key is **present**
-(`Object.hasOwn`) before parsing it, because "take it off them" and "say nothing
-about the assignee" are different instructions. A missing key or a non-string,
-non-null value is a 400 naming the field; the service's refusals are
-user-facing sentences the client shows as they arrive ("That user no longer
-exists.", "A deactivated user cannot be assigned tickets.") and are 400s rather
-than 404s, since the ticket in the path exists and it is the body that names
-someone impossible. The assignee check and the write share a `serializable()`
-transaction, like every other check-then-write here: otherwise an account
-deactivated between the two would still end up holding a ticket.
+**Presence is the instruction.** The keys in the body are the change; anything
+absent is left alone. That is why `null` on the two nullable fields is a value
+rather than a way of saying nothing - `assignedToId: null` unassigns,
+`category: null` clears the classification - and why `parseTicketPatch` tests
+`Object.hasOwn` rather than `!== undefined`. A body with none of the three is a
+400 (`Supply at least one of assignedToId, status or category`) rather than a
+200 that changed nothing, because a request asking for nothing is a client bug
+and a 200 would hide it. `category` takes the enum or `null`, never the list
+filter's `none`: that spelling is a query-string device, and a JSON body has a
+real null to use.
 
-Who may assign: **any signed-in user, to anyone, including a ticket somebody
-else holds** - the same reasoning as the queue being readable by everyone. A
-ticket nobody can take off a colleague who is away is a ticket nobody answers.
-The acting user is not recorded; tickets have no audit trail yet.
+`status` and `category` need no check beyond enum membership. **Every status
+transition is allowed, CLOSED back to OPEN included** - a student's reply
+reopens a closed ticket by itself (see the inbound rules), so an agent may do by
+hand what the mail does on its own. The assignee is the one field that can name
+something impossible, so it is the only one with a check in the service, and
+that check and the write share a `serializable()` transaction like every other
+check-then-write here: otherwise an account deactivated between the two would
+still end up holding a ticket. Its refusals are user-facing sentences the client
+shows as they arrive ("That user no longer exists.", "A deactivated user cannot
+be assigned tickets.") and are 400s rather than 404s, since the ticket in the
+path exists and it is the body that names someone impossible.
+
+Who may change a ticket: **any signed-in user, any ticket, including one
+somebody else holds** - the same reasoning as the queue being readable by
+everyone. A ticket nobody can take off a colleague who is away is a ticket
+nobody answers. The acting user is not recorded; tickets have no audit trail
+yet, so nothing says who closed one or who reassigned it.
 
 `GET /api/assignees` (`routes/assignees.ts`) is the list of people a ticket can
 go to: active accounts only, `{ id, name, email, role }`, by name, unpaginated.
@@ -1021,8 +1033,8 @@ SendGrid adapter behind one `InboundEmail` contract, and the ticket queue at
 `RawEmail` are the first application-owned tables; `Ticket` also carries `body`,
 `bodyHtml` and a nullable `assignedToId` relation to `User`. `GET
 /api/tickets/:id` reads one ticket with its thread and `PATCH /api/tickets/:id`
-assigns it, with `GET /api/assignees` listing who it can go to - both signed-in,
-neither admin-only. `bun run email:test` exercises the whole inbound path locally
+changes its assignee, status or category, with `GET /api/assignees` listing who
+it can go to - both signed-in, neither admin-only. `bun run email:test` exercises the whole inbound path locally
 without a provider account. See Tickets and inbound email above for the webhook's
 position above `express.json()`, the dedupe key, the two-phase write and the
 threading rules.
@@ -1073,17 +1085,42 @@ reads as descending on a bare `/tickets`, because that *is* the default.
 
 The ticket detail page at `/tickets/:id` (`pages/TicketDetailPage.tsx`) - where
 a subject link lands. Read-only: the subject as the heading, status and category
-badges, a description list of requester, assignee and the two timestamps, then
-the thread as one `Card` per message with a Received / Sent badge and the time.
-The assignee row is the page's one writable control (`AssigneeSelect`): a Select
-of everyone `GET /api/assignees` returns plus an Unassigned option, whose change
-`PATCH`es the ticket and writes the response straight into the detail query's
-cache - no refetch, and no second shape to keep in step. Its value is the
-ticket's assignee rather than what was clicked, so a refusal needs no undo; the
-error appears under the control. Whoever currently holds the ticket is added to
-the options if the list no longer offers them (they were deactivated since), or
-the select would match nothing and read as unassigned when it is not.
-`client/src/lib/assignees.ts` is that endpoint's API client, kept apart from
+**two columns from `lg` up**: the message thread on the left, a Details card on
+the right, with the subject spanning both above them. Below `lg` they stack,
+thread first - it is what an agent came to read, and it is first in the DOM too,
+so the visual order and the reading order agree. The sidebar is
+`lg:sticky lg:top-6`, which is what `lg:items-start` on the grid is for, and the
+thread column is `minmax(0,1fr)` so an unbroken line in a message cannot widen
+the page. The skeleton repeats the same grid, so nothing jumps sideways when the
+response lands; the reply composer (3.12) goes under the thread, in the left
+column.
+
+The Details card is a description list - Status, Category, Assigned to,
+Requester, Opened, Last message - with the label above each value, because a
+22rem column has no room for two. The thread is one `Card` per message with a
+Received / Sent badge and the time. The first three rows are controls
+(`StatusSelect`, `CategorySelect`, `AssigneeSelect`): selects in the same list
+as the facts that are not editable, rather than a separate toolbar saying the
+same things twice. That is why the page has no status or category `Badge` - the
+select shows the value - while the queue still does.
+
+All three go through one `useTicketUpdate` mutation, so a write in flight
+disables the others and every refusal reports in one place, at the foot of the
+card. The
+response is the whole ticket, written straight into the detail query's cache (no
+refetch, no second shape to keep in step); the queue's cached pages are
+invalidated instead, through `ticketKeys.lists()` rather than `all`, because
+they show status and category and a change here can move a ticket out of the
+filter a page was built from - while `all` would throw away the fresh detail
+just stored. Each control's value is the **ticket's** field rather than what was
+clicked, so a refusal needs no undo: the select never left the truth.
+
+Two details in the selects. Radix refuses an empty value, so Unassigned and
+Uncategorised are sentinels (`unassigned`, `none`) mapped to `null` on the wire.
+And whoever currently holds the ticket is added to the assignee options if the
+list no longer offers them (they were deactivated since), or the select would
+match nothing and read as unassigned when it is not.
+`client/src/lib/assignees.ts` is that list's API client, kept apart from
 `lib/users.ts` because this one is readable by every signed-in user and returns
 a deliberately thinner shape.
 Message bodies are plain text in a `whitespace-pre-wrap` paragraph; there is no
@@ -1094,9 +1131,8 @@ request - and a 404 from the server shows the same message, since the two are
 the same miss. Its skeleton follows the list's rule: a `role="status"`
 announcement with the shapes `aria-hidden` beside it, carrying none of the real
 content's accessible names, so a test waiting on the `<h1>` cannot match it.
-Not admin-gated, for the same reason `/tickets` is not. Status and category
-controls (3.11) and the reply composer (3.12) belong on this page and are not
-built; assignment is.
+Not admin-gated, for the same reason `/tickets` is not. The reply composer
+(3.12) is the one thing still missing from this page.
 
 Routing is React Router v7 in declarative mode. The login page is the
 reference for how a form should be built: `Card` around `Field` /
@@ -1112,9 +1148,9 @@ the ticket detail page yet. Vitest component tests cover both list pages and the
 detail page (`UsersPage.test.tsx`, `TicketsPage.test.tsx`,
 `TicketDetailPage.test.tsx`).
 
-Not built yet, in this feature's area: assignment is the only write a ticket
-takes - no status or category control and no agent reply (3.7, 3.8, 3.11, 3.12),
-and no record of who assigned what; no job queue, so the webhook converts inline - `RawEmail.processedAt IS
+Not built yet, in this feature's area: no agent reply (3.8, 3.12), so a ticket's
+thread only ever grows inbound; no record of who changed what, so nothing says
+who closed a ticket or reassigned it; no job queue, so the webhook converts inline - `RawEmail.processedAt IS
 NULL` is the seam a worker slots into (4.2, 4.5); no provider account or real
 inbound route (4.1); attachment metadata is stored but the bytes are dropped; no
 rate limit on the webhook (8.3); nothing outbound at all, so no student ever
