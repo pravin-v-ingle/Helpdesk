@@ -3,9 +3,10 @@ import {
   rowSortingFeature,
   tableFeatures,
   useTable,
-} from '@tanstack/react-table'
-import { Badge } from '@/components/ui/badge'
-import { Skeleton } from '@/components/ui/skeleton'
+} from "@tanstack/react-table";
+import { Link } from "react-router";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -13,12 +14,22 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table'
-import { SortableHead } from './SortableHead.tsx'
-import { sortingChangeHandler, toSortingState, type Sort, type SortDir } from '../lib/sorting.ts'
-import { isTicketSortBy, TicketStatus, type Ticket, type TicketSortBy } from '../lib/tickets.ts'
+} from "@/components/ui/table";
+import { SortableHead } from "./SortableHead.tsx";
+import {
+  sortingChangeHandler,
+  toSortingState,
+  type Sort,
+  type SortDir,
+} from "../lib/sorting.ts";
+import {
+  isTicketSortBy,
+  TicketStatus,
+  type Ticket,
+  type TicketSortBy,
+} from "../lib/tickets.ts";
 
-const SKELETON_ROWS = 5
+const SKELETON_ROWS = 5;
 
 /**
  * The columns, in the order they are shown. Keyed by `TicketSortBy`, so the
@@ -28,49 +39,57 @@ const SKELETON_ROWS = 5
  * doubles as the column order, the device `STATUS_VARIANTS` below already uses.
  */
 const COLUMN_LABELS: Record<TicketSortBy, string> = {
-  subject: 'Subject',
-  requesterName: 'Requester',
-  status: 'Status',
-  category: 'Category',
-  messageCount: 'Messages',
-  lastMessageAt: 'Last message',
-}
+  subject: "Subject",
+  requesterName: "Requester",
+  status: "Status",
+  category: "Category",
+  messageCount: "Messages",
+  lastMessageAt: "Last message",
+};
 
-const COLUMN_ALIGN: Partial<Record<string, 'right'>> = { messageCount: 'right' }
+const COLUMN_ALIGN: Partial<Record<string, "right">> = {
+  messageCount: "right",
+};
 
 const CELL_CLASSES: Partial<Record<string, string>> = {
-  subject: 'font-medium',
-  category: 'text-muted-foreground',
-  messageCount: 'text-right tabular-nums',
-  lastMessageAt: 'text-muted-foreground',
-}
+  subject: "font-medium",
+  category: "text-muted-foreground",
+  messageCount: "text-right tabular-nums",
+  lastMessageAt: "text-muted-foreground",
+};
 
 /** Shown in the Category cell for a ticket the classifier has not reached. */
-const UNCATEGORISED = '—'
+const UNCATEGORISED = "—";
 
 /**
  * Human labels for the category enum, as a `Record` keyed by the union: adding a
  * category to the Prisma schema is then a compile error here until it has a
  * label, rather than a raw `REFUND_REQUEST` appearing in the table.
  */
-export const TICKET_CATEGORY_LABELS: Record<NonNullable<Ticket['category']>, string> = {
-  GENERAL_QUESTION: 'General question',
-  TECHNICAL_QUESTION: 'Technical question',
-  REFUND_REQUEST: 'Refund request',
-}
+export const TICKET_CATEGORY_LABELS: Record<
+  NonNullable<Ticket["category"]>,
+  string
+> = {
+  GENERAL_QUESTION: "General question",
+  TECHNICAL_QUESTION: "Technical question",
+  REFUND_REQUEST: "Refund request",
+};
 
 export const TICKET_STATUS_LABELS: Record<TicketStatus, string> = {
-  OPEN: 'Open',
-  RESOLVED: 'Resolved',
-  CLOSED: 'Closed',
-}
+  OPEN: "Open",
+  RESOLVED: "Resolved",
+  CLOSED: "Closed",
+};
 
 /** Open is the queue, so it is the one status that stands out. */
-const STATUS_VARIANTS: Record<TicketStatus, 'default' | 'secondary' | 'outline'> = {
-  OPEN: 'default',
-  RESOLVED: 'secondary',
-  CLOSED: 'outline',
-}
+const STATUS_VARIANTS: Record<
+  TicketStatus,
+  "default" | "secondary" | "outline"
+> = {
+  OPEN: "default",
+  RESOLVED: "secondary",
+  CLOSED: "outline",
+};
 
 /**
  * `rowSortingFeature` supplies the sorting state and APIs. Omitting
@@ -78,8 +97,8 @@ const STATUS_VARIANTS: Record<TicketStatus, 'default' | 'secondary' | 'outline'>
  * `manualSorting` below. No pagination feature either: `Pagination.tsx` and
  * the server own paging between them.
  */
-const features = tableFeatures({ rowSortingFeature })
-const helper = createColumnHelper<typeof features, Ticket>()
+const features = tableFeatures({ rowSortingFeature });
+const helper = createColumnHelper<typeof features, Ticket>();
 
 /**
  * The cell renderers live in the column defs, which is what makes a
@@ -91,8 +110,20 @@ const helper = createColumnHelper<typeof features, Ticket>()
  * and `category` is null on every row until the Phase 5 classifier runs.
  */
 const columns = helper.columns([
-  helper.accessor('subject', { header: COLUMN_LABELS.subject, sortDescFirst: false }),
-  helper.accessor('requesterName', {
+  helper.accessor("subject", {
+    header: COLUMN_LABELS.subject,
+    sortDescFirst: false,
+    cell: ({ row }) => (
+      // The subject is the way in to the ticket, and the only one: a whole
+      // clickable row would have no accessible name and nothing to put a
+      // keyboard focus on. A real `<a href>`, so the browser's own
+      // middle-click, Ctrl-click and "copy link" all work.
+      <Link to={`/tickets/${row.original.id}`} className="link font-medium">
+        {row.original.subject}
+      </Link>
+    ),
+  }),
+  helper.accessor("requesterName", {
     header: COLUMN_LABELS.requesterName,
     sortDescFirst: false,
     cell: ({ row }) => (
@@ -101,11 +132,13 @@ const columns = helper.columns([
             come to reply. The header sorts by the name for the same reason -
             a header reading "Requester" must order by what the eye lands on. */}
         <span className="block">{row.original.requesterName}</span>
-        <span className="block text-sm text-muted-foreground">{row.original.requesterEmail}</span>
+        <span className="block text-sm text-muted-foreground">
+          {row.original.requesterEmail}
+        </span>
       </>
     ),
   }),
-  helper.accessor('status', {
+  helper.accessor("status", {
     header: COLUMN_LABELS.status,
     sortDescFirst: false,
     cell: ({ row }) => (
@@ -114,7 +147,7 @@ const columns = helper.columns([
       </Badge>
     ),
   }),
-  helper.accessor('category', {
+  helper.accessor("category", {
     header: COLUMN_LABELS.category,
     sortDescFirst: false,
     cell: ({ row }) =>
@@ -123,22 +156,27 @@ const columns = helper.columns([
       row.original.category === null ? (
         UNCATEGORISED
       ) : (
-        <Badge variant="secondary">{TICKET_CATEGORY_LABELS[row.original.category]}</Badge>
+        <Badge variant="secondary">
+          {TICKET_CATEGORY_LABELS[row.original.category]}
+        </Badge>
       ),
   }),
-  helper.accessor('messageCount', { header: COLUMN_LABELS.messageCount, sortDescFirst: true }),
-  helper.accessor('lastMessageAt', {
+  helper.accessor("messageCount", {
+    header: COLUMN_LABELS.messageCount,
+    sortDescFirst: true,
+  }),
+  helper.accessor("lastMessageAt", {
     header: COLUMN_LABELS.lastMessageAt,
     sortDescFirst: true,
     cell: ({ row }) => (
       <time dateTime={row.original.lastMessageAt}>
         {new Date(row.original.lastMessageAt).toLocaleDateString(undefined, {
-          dateStyle: 'medium',
+          dateStyle: "medium",
         })}
       </time>
     ),
   }),
-])
+]);
 
 /**
  * The ticket queue as a table. Presentational: it is given the rows to show and
@@ -151,8 +189,9 @@ const columns = helper.columns([
  * the database owns the order. Nothing is re-sorted in the browser - the rows
  * are rendered in exactly the order they arrived.
  *
- * Rows are inert. The detail page is task 3.10; until it exists a row that
- * looked clickable would be a promise the app cannot keep.
+ * The subject cell is a link to `/tickets/:id`; the rest of the row is inert.
+ * Being a link rather than a row-wide click handler is what makes the detail
+ * page reachable from the keyboard and openable in a new tab.
  */
 export function TicketsTable({
   tickets,
@@ -162,21 +201,21 @@ export function TicketsTable({
   fetching,
   emptyText,
 }: {
-  tickets: Ticket[]
+  tickets: Ticket[];
   /**
    * The effective sort - the page resolves the default before passing it, so
    * a bare `/tickets` shows Last message as descending rather than as unsorted.
    */
-  sortBy: TicketSortBy
-  sortDir: SortDir
+  sortBy: TicketSortBy;
+  sortDir: SortDir;
   /** `undefined` means "back to the default", which the page stores as absent. */
-  onSortChange: (next: Sort<TicketSortBy> | undefined) => void
+  onSortChange: (next: Sort<TicketSortBy> | undefined) => void;
   /** A refetch is in flight; the rows on screen may be stale. */
-  fetching: boolean
+  fetching: boolean;
   /** Shown in place of rows when `tickets` is empty. */
-  emptyText: string
+  emptyText: string;
 }) {
-  const sort = { sortBy, sortDir }
+  const sort = { sortBy, sortDir };
 
   const table = useTable({
     features,
@@ -195,7 +234,7 @@ export function TicketsTable({
     // Without this React keys rows by index, so a re-sort would reuse DOM
     // nodes across semantically different rows.
     getRowId: (row) => String(row.id),
-  })
+  });
 
   return (
     // The table stays mounted while a refetch is in flight, so the page does
@@ -236,7 +275,10 @@ export function TicketsTable({
             table.getRowModel().rows.map((row) => (
               <TableRow key={row.id}>
                 {row.getAllCells().map((cell) => (
-                  <TableCell key={cell.id} className={CELL_CLASSES[cell.column.id]}>
+                  <TableCell
+                    key={cell.id}
+                    className={CELL_CLASSES[cell.column.id]}
+                  >
                     <table.FlexRender cell={cell} />
                   </TableCell>
                 ))}
@@ -246,7 +288,7 @@ export function TicketsTable({
         </TableBody>
       </Table>
     </div>
-  )
+  );
 }
 
 /**
@@ -301,5 +343,5 @@ export function TicketsTableSkeleton() {
         </TableBody>
       </Table>
     </div>
-  )
+  );
 }

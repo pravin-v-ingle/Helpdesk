@@ -765,8 +765,21 @@ Postgres puts the unclassified last on `asc` and first on `desc`.
 
 The list response deliberately omits three `Ticket` columns: `bodyHtml` is
 untrusted sender markup and nothing on the client sanitises it, and `body` and
-`assignedToId` are not on the list view yet. All three belong to the detail
-endpoint (task 3.6).
+`assignedToId` are not on the list view.
+
+`GET /api/tickets/:id` returns `{ ticket }` - the same row the list returns plus
+`assignedTo` (`{ id, name, email }` or null) and `messages`, **oldest first**,
+each `{ id, direction, fromEmail, fromName, body, createdAt }`. Same auth as the
+list: `requireAuth`, no role check, no ownership check. Two columns still stay
+behind. `Ticket.body` is the first message denormalised, so the thread already
+carries it, and the list's rule holds here too - a field no page reads quietly
+becomes part of the contract. `bodyHtml`, on the ticket and on every message, is
+untrusted sender markup: this is the endpoint that will keep being tempted to
+include it, and the answer is no until something sanitises it. An id that is not
+a positive integer is a **404, not a 400** (`parseTicketId` in `routes/tickets.ts`):
+`/api/tickets/abc` names no ticket, and "Ticket not found" is the one message the
+detail page has to render anyway. A query parameter is different - there the
+field name is worth saying, which is what `parseIntParam` does.
 
 ## Testing
 
@@ -953,8 +966,9 @@ the main session like any other client code.
 ## State
 
 Phase 1 is done. Phase 2 is done on the server, and all of it is done on the
-client except a restore/suspend control on the admin user page. Phase 3 is done
-as far as the list (3.1-3.3, 3.5, 3.9a); Phase 4 has its inbound half (4.3-4.11,
+client except a restore/suspend control on the admin user page. Phase 3 has its
+read half - the list and the detail page (3.1-3.3, 3.5, 3.6, 3.9a, 3.9b, 3.10) -
+and nothing that writes to a ticket; Phase 4 has its inbound half (4.3-4.11,
 less the queue).
 
 Shared: `core/` holds `createUserSchema`, validated by the dialog and by
@@ -969,7 +983,7 @@ SendGrid adapter behind one `InboundEmail` contract, and the ticket queue at
 `GET /api/tickets` - signed-in, not admin-only. `Ticket`, `Message` and
 `RawEmail` are the first application-owned tables; `Ticket` also carries `body`,
 `bodyHtml` and a nullable `assignedToId` relation to `User`, though nothing
-assigns yet. `bun run email:test` exercises the whole inbound path locally
+assigns yet. `GET /api/tickets/:id` reads one ticket with its thread. `bun run email:test` exercises the whole inbound path locally
 without a provider account. See Tickets and inbound email above for the webhook's
 position above `express.json()`, the dedupe key, the two-phase write and the
 threading rules.
@@ -1008,13 +1022,31 @@ was built from `UsersPage` and keeps its `readFilters` / `updateFilters` / URL
 state / `keepPreviousData` / hold-over-error / page-past-the-end machinery, with
 Status and Category selects in place of the search box and role filter, and no
 header button because nothing creates a ticket from the UI. `Pagination` was
-extracted out of `UsersPage` so both use it. Rows are inert until the detail page
-(3.10). `components/TicketsTable.tsx` renders them - requester name over address,
-an em dash for an unclassified ticket, a message count - and
+extracted out of `UsersPage` so both use it. The subject cell is a `Link` to
+`/tickets/:id` and is the only live thing in a row: a link rather than a
+row-wide click handler, so it has an accessible name, takes keyboard focus and
+opens in a new tab. `components/TicketsTable.tsx` renders the rows - requester
+name over address, an em dash for an unclassified ticket, a message count - and
 `client/src/lib/tickets.ts` holds the API client, the query definitions, the
-two enum mirrors and `TicketSortBy`. Every column header is a sort control
+two enum mirrors, `TicketSortBy` and the detail query. Every column header is a sort control
 (`sortBy` / `sortDir` in the URL, the database doing the ordering); Last message
 reads as descending on a bare `/tickets`, because that *is* the default.
+
+The ticket detail page at `/tickets/:id` (`pages/TicketDetailPage.tsx`) - where
+a subject link lands. Read-only: the subject as the heading, status and category
+badges, a description list of requester, assignee and the two timestamps, then
+the thread as one `Card` per message with a Received / Sent badge and the time.
+Message bodies are plain text in a `whitespace-pre-wrap` paragraph; there is no
+`dangerouslySetInnerHTML` anywhere and nothing to put in one, because the
+endpoint does not send `bodyHtml`. The page reads its id from `useParams` and
+checks it before querying, so `/tickets/abc` shows "Ticket not found" without a
+request - and a 404 from the server shows the same message, since the two are
+the same miss. Its skeleton follows the list's rule: a `role="status"`
+announcement with the shapes `aria-hidden` beside it, carrying none of the real
+content's accessible names, so a test waiting on the `<h1>` cannot match it.
+Not admin-gated, for the same reason `/tickets` is not. Status and category
+controls (3.11) and the reply composer (3.12) belong on this page and are not
+built.
 
 Routing is React Router v7 in declarative mode. The login page is the
 reference for how a form should be built: `Card` around `Field` /
@@ -1025,11 +1057,14 @@ and the form-level error in `errors.root` (see Conventions → Forms);
 
 Testing: Playwright is set up in `e2e/` with its own database and ports (see
 Testing above); specs cover login, sign-out, protected routes, roles, the API
-guards, deactivation and deletion, and sorting on both lists. Vitest component
-tests cover both list pages (`UsersPage.test.tsx`, `TicketsPage.test.tsx`).
+guards, deactivation and deletion, and sorting on both lists; no e2e spec covers
+the ticket detail page yet. Vitest component tests cover both list pages and the
+detail page (`UsersPage.test.tsx`, `TicketsPage.test.tsx`,
+`TicketDetailPage.test.tsx`).
 
-Not built yet, in this feature's area: no ticket detail page and no reply
-composer (3.6-3.12); no job queue, so the webhook converts inline - `RawEmail.processedAt IS
+Not built yet, in this feature's area: nothing writes to a ticket - no status or
+category control, no agent reply, no assignment (3.7, 3.8, 3.11, 3.12), so the
+detail page is read-only; no job queue, so the webhook converts inline - `RawEmail.processedAt IS
 NULL` is the seam a worker slots into (4.2, 4.5); no provider account or real
 inbound route (4.1); attachment metadata is stored but the bytes are dropped; no
 rate limit on the webhook (8.3); nothing outbound at all, so no student ever

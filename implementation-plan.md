@@ -69,12 +69,12 @@ Built against seeded data, before email exists.
 - [x] 3.3 Add indexes for the columns the list view filters and sorts on. (Covers the filters and the default order. Every column became sortable in 3.9b and `subject`, `requesterName` and the message count are deliberately left unindexed - see the note on `Ticket`'s `@@index` block for the reasoning and the trigger to revisit.)
 - [ ] 3.4 Write a seed script that creates sample tickets and messages.
 - [x] 3.5 Implement `GET /api/tickets` with pagination, filter by status and category, and sort by date.
-- [ ] 3.6 Implement `GET /api/tickets/:id` returning the ticket and its messages.
+- [x] 3.6 Implement `GET /api/tickets/:id` returning the ticket and its messages. (The list row plus `assignedTo` and the thread, oldest message first. `Ticket.body` is left out - it is the first message denormalised, so the thread already carries it - and `bodyHtml`, on the ticket and on every message, stays server-side until something sanitises it. A non-numeric id is a 404, not a 400.)
 - [ ] 3.7 Implement `PATCH /api/tickets/:id` to change status and category.
 - [ ] 3.8 Implement `POST /api/tickets/:id/messages` to add an agent reply (stored only for now).
 - [x] 3.9a Build the ticket list page: `/tickets` shows a paginated table with status and category filters, all of its state in the URL. Not admin-gated - working tickets is the agent's job.
 - [x] 3.9b Make every column header on `/tickets` a sort control, with the sorting done on the server. TanStack Table v9 owns the column model and the toggle cycle; `sortBy` and `sortDir` live in the URL and go to the API. The old `?sort=newest|oldest` is retired. `/users` migrated to the same idiom in the same change.
-- [ ] 3.10 Build the ticket detail page showing the message thread.
+- [x] 3.10 Build the ticket detail page showing the message thread. `/tickets/:id`, reached from the subject link on the queue. Read-only: subject, status, category, requester, assignee, and the thread with each message's direction and time. Loading, not-found and error states included (3.13's half for this page).
 - [ ] 3.11 Add status and category controls to the detail page.
 - [ ] 3.12 Add the reply composer to the detail page.
 - [ ] 3.13 Add loading, empty, and error states to both pages.

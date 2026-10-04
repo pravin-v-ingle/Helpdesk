@@ -193,6 +193,26 @@ describe('TicketsPage', () => {
     expect(within(closedRow!).getByText('Technical question')).toBeInTheDocument()
   })
 
+  /**
+   * The subject is the way in to the ticket. A link rather than a row click
+   * handler, so it has an accessible name, takes keyboard focus and opens in a
+   * new tab - and so the href can be asserted without navigating.
+   */
+  it('links each subject to the ticket detail page', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([unclassified, resolved]))
+    const page = renderPage()
+    const table = await page.table()
+
+    expect(within(table).getByRole('link', { name: 'Cannot see my enrolment' })).toHaveAttribute(
+      'href',
+      '/tickets/1',
+    )
+    expect(within(table).getByRole('link', { name: 'Refund for the summer module' })).toHaveAttribute(
+      'href',
+      '/tickets/2',
+    )
+  })
+
   it('shows an em dash for a ticket no classifier has reached', async () => {
     mockedApiFetch.mockResolvedValue(listResponse([unclassified, resolved]))
     const page = renderPage()

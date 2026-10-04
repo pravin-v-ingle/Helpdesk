@@ -105,6 +105,55 @@ export type Ticket = {
   messageCount: number
 }
 
+/**
+ * Mirrors `enum MessageDirection` in `server/prisma/schema.prisma`: INBOUND is
+ * from the student, OUTBOUND from an agent. Same const-object shape and the
+ * same reason as the two enums above.
+ */
+export const MessageDirection = {
+  INBOUND: 'INBOUND',
+  OUTBOUND: 'OUTBOUND',
+} as const
+
+export type MessageDirection = (typeof MessageDirection)[keyof typeof MessageDirection]
+
+/**
+ * One message on a ticket. Mirrors `PublicMessage` in
+ * `server/src/services/tickets.ts`.
+ *
+ * `bodyHtml` is absent on purpose, as it is on the ticket: it is untrusted
+ * sender markup and nothing here sanitises it. `body` is the same message as
+ * plain text, already stripped of the quoted reply and the signature.
+ */
+export type TicketMessage = {
+  id: number
+  direction: MessageDirection
+  fromEmail: string
+  fromName: string
+  body: string
+  createdAt: string
+}
+
+/** The agent a ticket is assigned to. Null for the unassigned queue. */
+export type TicketAssignee = {
+  id: string
+  name: string
+  email: string
+}
+
+/**
+ * What `GET /api/tickets/:id` returns: the list row plus the three things the
+ * list has no use for. Mirrors `PublicTicketDetail` in
+ * `server/src/services/tickets.ts`, and is deliberately `Ticket` *plus* fields
+ * rather than a second ticket type, so anything that renders a list row
+ * renders a detail too.
+ */
+export type TicketDetail = Ticket & {
+  assignedTo: TicketAssignee | null
+  /** Oldest first - a thread is read in the order it happened. */
+  messages: TicketMessage[]
+}
+
 export type TicketListParams = {
   status?: TicketStatus
   category?: CategoryFilter
@@ -131,12 +180,20 @@ export type TicketListResponse = {
 export const ticketKeys = {
   all: ['tickets'] as const,
   list: (params: TicketListParams) => [...ticketKeys.all, 'list', params] as const,
+  detail: (id: number) => [...ticketKeys.all, 'detail', id] as const,
 }
 
 export function ticketListQueryOptions(params: TicketListParams) {
   return queryOptions({
     queryKey: ticketKeys.list(params),
     queryFn: ({ signal }) => listTickets(params, signal),
+  })
+}
+
+export function ticketDetailQueryOptions(id: number) {
+  return queryOptions({
+    queryKey: ticketKeys.detail(id),
+    queryFn: ({ signal }) => getTicket(id, signal),
   })
 }
 
@@ -151,4 +208,10 @@ export function listTickets(
   const query = search.toString()
 
   return apiFetch<TicketListResponse>(query ? `/api/tickets?${query}` : '/api/tickets', { signal })
+}
+
+/** One ticket and its thread. A 404 arrives as an `ApiError`, like any refusal. */
+export async function getTicket(id: number, signal?: AbortSignal): Promise<TicketDetail> {
+  const { ticket } = await apiFetch<{ ticket: TicketDetail }>(`/api/tickets/${id}`, { signal })
+  return ticket
 }

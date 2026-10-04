@@ -10,10 +10,14 @@ import { Role } from '../lib/api.ts'
  * The shared style for a nav link beside the wordmark. Hoisted out of the links
  * themselves now that there is more than one of them, so the active and
  * inactive states cannot drift apart.
+ *
+ * `link` is the application-wide underline behaviour (index.css); what is added
+ * here is only what makes these nav links rather than links in general - the
+ * size, and the colour that marks the current page.
  */
 function navLinkClass({ isActive }: { isActive: boolean }) {
   return cn(
-    'text-sm transition-colors hover:text-foreground',
+    'link text-sm transition-colors hover:text-foreground',
     isActive ? 'font-medium text-foreground' : 'text-muted-foreground',
   )
 }
@@ -37,7 +41,7 @@ export function NavBar() {
   return (
     <header className="flex items-center justify-between gap-4 border-b px-6 py-3">
       <nav className="flex items-center gap-4">
-        <NavLink to="/" className="text-lg font-semibold tracking-tight">
+        <NavLink to="/" className="link text-lg font-semibold tracking-tight">
           Helpdesk
         </NavLink>
         {/* Unconditional: every signed-in user works tickets, so this link sits

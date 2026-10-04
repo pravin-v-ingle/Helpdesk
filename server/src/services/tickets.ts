@@ -1,6 +1,7 @@
 import { Prisma } from "../generated/prisma/client.ts";
 import type { TicketCategory, TicketStatus } from "../generated/prisma/enums.ts";
 import { prisma } from "../lib/prisma.ts";
+import { HttpError } from "../middleware/error-handler.ts";
 
 /**
  * The ticket shape the list endpoint returns.
@@ -9,8 +10,8 @@ import { prisma } from "../lib/prisma.ts";
  * and the client has no sanitiser, so it does not cross the wire until
  * something is ready to render it safely; `body` and `assignedToId` are simply
  * not on the list view yet, and a field in the response that nothing reads is
- * a field that quietly becomes part of the contract. The detail endpoint (task
- * 3.6) is where all three belong.
+ * a field that quietly becomes part of the contract. `getTicket` below adds
+ * the first two; `bodyHtml` still goes nowhere.
  */
 const publicTicketSelect = {
   id: true,
@@ -158,4 +159,65 @@ export async function listTickets(
   ]);
 
   return { tickets: tickets.map(toPublicTicket), total };
+}
+
+/**
+ * One ticket with its thread, for the detail page.
+ *
+ * It is the list row plus the two things the list has no use for: who the
+ * ticket is assigned to, and the messages themselves. `messageCount` is kept
+ * even though `messages.length` would give it, so the detail shape is the list
+ * shape plus fields rather than a second, incompatible ticket type on the
+ * client.
+ *
+ * Two columns stay behind. `Ticket.body` is the first message denormalised, so
+ * the thread below already carries it - and the list's rule holds here too:
+ * a field the page does not read is a field that quietly becomes part of the
+ * contract. `bodyHtml`, on the ticket and on every message, is untrusted
+ * sender markup, and this is the endpoint that was always going to be tempted
+ * to include it; nothing on the client sanitises it, so until something does,
+ * the HTML part of an email does not leave the server. The plain-text `body`
+ * on each message is the same mail with the quoted reply and signature
+ * stripped, which is what an agent reads anyway.
+ */
+const messageSelect = {
+  id: true,
+  direction: true,
+  fromEmail: true,
+  fromName: true,
+  body: true,
+  createdAt: true,
+} as const satisfies Prisma.MessageSelect;
+
+const ticketDetailSelect = {
+  ...publicTicketSelect,
+  // The agent's name is what the page shows; the id is what a future assign
+  // control would write back.
+  assignedTo: { select: { id: true, name: true, email: true } },
+  messages: {
+    select: messageSelect,
+    // Oldest first: a thread is read in the order it happened, which is the
+    // opposite of the queue's ordering. `id` breaks a tie the way the list's
+    // `orderByFor` does - two messages can share a timestamp.
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  },
+} as const satisfies Prisma.TicketSelect;
+
+type TicketDetailRow = Prisma.TicketGetPayload<{ select: typeof ticketDetailSelect }>;
+
+export type PublicMessage = Prisma.MessageGetPayload<{ select: typeof messageSelect }>;
+
+export type PublicTicketDetail = Omit<TicketDetailRow, "_count"> & { messageCount: number };
+
+/**
+ * A ticket by id, or a 404. No ownership check: `GET /api/tickets` is
+ * `requireAuth` only for the same reason - every signed-in user may read every
+ * ticket, which is what makes a guessable sequential id harmless.
+ */
+export async function getTicket(id: number): Promise<PublicTicketDetail> {
+  const ticket = await prisma.ticket.findUnique({ where: { id }, select: ticketDetailSelect });
+  if (!ticket) throw new HttpError(404, "Ticket not found");
+
+  const { _count, ...rest } = ticket;
+  return { ...rest, messageCount: _count.messages };
 }

@@ -117,6 +117,21 @@
     --sidebar-ring: oklch(0.556 0 0);
 }
 
+/**
+ * The app's one link style: underlined on hover and on keyboard focus, with
+ * the underline sitting clear of the descenders. Every anchor and every
+ * react-router `Link`/`NavLink` carries this class, so the whole application
+ * agrees on what a link does under the pointer - colour and size stay with the
+ * link, which is why they are not in here.
+ *
+ * A Tailwind v4 `@utility` rather than a TypeScript constant: it composes with
+ * the other utilities on the element, belongs to the theme file the rest of the
+ * styling lives in, and needs no import at the call site.
+ */
+@utility link {
+    @apply underline-offset-4 hover:underline focus-visible:underline;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

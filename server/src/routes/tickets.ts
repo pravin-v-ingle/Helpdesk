@@ -18,6 +18,10 @@ ticketsRouter.get("/", async (req, res) => {
   res.json({ tickets: list, total, page: query.page, pageSize: query.pageSize });
 });
 
+ticketsRouter.get("/:id", async (req, res) => {
+  res.json({ ticket: await tickets.getTicket(parseTicketId(req.params.id)) });
+});
+
 // --- input validation -------------------------------------------------------
 // The same shape as `routes/users.ts`: a `Record` keyed by the union for each
 // enum so adding a member is a compile error until it is accepted here, and
@@ -117,6 +121,24 @@ function isSortDir(value: unknown): value is tickets.SortDir {
 function parseSortDirOrThrow(value: unknown): tickets.SortDir {
   if (isSortDir(value)) return value;
   throw new HttpError(400, `sortDir must be ${Object.keys(SORT_DIRS).join(" or ")}`);
+}
+
+/**
+ * A ticket id from the path. Anything that is not a positive integer is a 404
+ * rather than a 400: `/api/tickets/abc` names no ticket, and "Ticket not
+ * found" is both true and the one message the detail page has to render. A
+ * query parameter is different - there the field name is worth saying, which
+ * is what `parseIntParam` below does.
+ */
+function parseTicketId(value: string): number {
+  if (!/^\d+$/.test(value)) throw new HttpError(404, "Ticket not found");
+  const id = Number(value);
+  // Beyond 2^31 Postgres would reject the comparison against an `int4` column
+  // outright, so it is refused here as the miss it is.
+  if (!Number.isSafeInteger(id) || id < 1 || id > 2_147_483_647) {
+    throw new HttpError(404, "Ticket not found");
+  }
+  return id;
 }
 
 /**
