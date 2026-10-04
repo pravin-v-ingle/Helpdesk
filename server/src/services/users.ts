@@ -1,4 +1,4 @@
-import { Prisma, Role } from "../generated/prisma/client.ts";
+import { Prisma, Role, TicketStatus } from "../generated/prisma/client.ts";
 import { prisma } from "../lib/prisma.ts";
 import { createUserWithPassword, setUserPassword } from "../lib/auth-accounts.ts";
 import { serializable } from "../lib/transaction.ts";
@@ -278,9 +278,37 @@ export async function updateUser(
 }
 
 /**
+ * Hands the open tickets a removed user was holding back to the unassigned
+ * queue. Work in progress cannot wait for an account that is gone, and a
+ * ticket nobody holds is at least visible as nobody's; one assigned to a
+ * deleted agent looks handled and is not.
+ *
+ * `OPEN` only, deliberately. On a `RESOLVED` or `CLOSED` ticket the assignee is
+ * no longer a job queue but the record of who dealt with it - which is the
+ * whole reason a user is soft-deleted rather than removed - so that is left
+ * exactly as it was.
+ *
+ * Runs inside the caller's serializable transaction, with the removal itself,
+ * so there is no instant where the account is suspended and an open ticket
+ * still names it, and a failure takes both back. Returns nothing: both
+ * endpoints answer with the user.
+ *
+ * Not undone by `reactivateUser`. Nothing records which tickets were taken
+ * away, and a ticket another agent has since picked up must not be pulled back
+ * from them.
+ */
+async function unassignOpenTickets(tx: Prisma.TransactionClient, userId: string) {
+  await tx.ticket.updateMany({
+    where: { assignedToId: userId, status: TicketStatus.OPEN },
+    data: { assignedToId: null },
+  });
+}
+
+/**
  * Suspends a user and deletes their sessions, so they are signed out
  * everywhere immediately rather than at the end of their session lifetime.
- * The row is kept: tickets they touched still need to name them.
+ * The row is kept: tickets they touched still need to name them - all but the
+ * open ones, which `unassignOpenTickets` hands back to the queue.
  *
  * Distinct from `deleteUser` below: a deactivation is reversible housekeeping
  * and leaves `deletedAt` null, so the two are still told apart afterwards.
@@ -309,6 +337,7 @@ export async function deactivateUser(id: string, actingUserId: string) {
       data: { active: false },
       select: publicUserSelect,
     });
+    await unassignOpenTickets(tx, id);
     await tx.session.deleteMany({ where: { userId: id } });
 
     return updated;
@@ -320,6 +349,8 @@ export async function deactivateUser(id: string, actingUserId: string) {
  * and when, and `active: false` is what actually blocks sign-in, which is why
  * both are written together. Nothing is ever removed from the table - tickets
  * the person handled still have to name them - and `reactivateUser` undoes it.
+ * What it does not undo is the unassignment: the open tickets this hands back
+ * to the queue stay there. See `unassignOpenTickets`.
  */
 export async function deleteUser(id: string, actingUserId: string) {
   return serializable(async (tx) => {
@@ -341,6 +372,7 @@ export async function deleteUser(id: string, actingUserId: string) {
       data: { active: false, deletedAt: new Date() },
       select: publicUserSelect,
     });
+    await unassignOpenTickets(tx, id);
     await tx.session.deleteMany({ where: { userId: id } });
 
     return updated;
@@ -351,6 +383,10 @@ export async function deleteUser(id: string, actingUserId: string) {
  * Restores a user from either removed state. `deletedAt` is cleared along with
  * `active`, so the invariant "deleted implies inactive" cannot be left broken
  * by a reactivation.
+ *
+ * Their tickets do not come back with them. The removal gave the open ones to
+ * the queue and recorded nothing about which they were, and by now someone else
+ * may be holding them - see `unassignOpenTickets`.
  */
 export async function reactivateUser(id: string) {
   await getUser(id);

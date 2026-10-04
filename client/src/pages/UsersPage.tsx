@@ -37,6 +37,16 @@ const SEARCH_DEBOUNCE_MS = 300
 // there is no `DEFAULT_SORT_BY` to declare. The direction is what a column
 // with no direction of its own falls back to.
 const DEFAULT_SORT_DIR: SortDir = SortDir.desc
+/**
+ * The status the list shows when the URL names none. Removal is soft here -
+ * nothing ever leaves the table, because a ticket somebody handled still has
+ * to name them - so without a default the deactivated and the deleted pile up
+ * for ever in the admin's view of who works here. Unlike `role`, then, an
+ * absent `status` is not "no filter": `?status=all` is, and it is the one
+ * `?status=` value that is not a `UserStatus`.
+ */
+const DEFAULT_STATUS: UserStatus = 'active'
+const ALL_STATUSES = 'all'
 
 const NETWORK_ERROR = 'Could not reach the server. Please try again.'
 
@@ -70,7 +80,6 @@ function isUserStatus(value: unknown): value is UserStatus {
 function readFilters(params: URLSearchParams): Filters {
   const q = params.get('q')?.trim().slice(0, MAX_QUERY_LENGTH)
   const role = params.get('role')
-  const status = params.get('status')
 
   // Key order is load-bearing: `listUsers` iterates `Object.entries`, so the
   // order these are declared in is the order they appear in the request path.
@@ -78,11 +87,21 @@ function readFilters(params: URLSearchParams): Filters {
   return {
     q: q ? q : undefined,
     role: isRole(role) ? role : undefined,
-    status: isUserStatus(status) ? status : undefined,
+    status: readStatus(params.get('status')),
     ...readSort(params.get('sortBy'), params.get('sortDir')),
     page: readPositiveInt(params.get('page')) ?? 1,
     pageSize: Math.min(readPositiveInt(params.get('pageSize')) ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE),
   }
+}
+
+/**
+ * `all` means every row; anything unusable - including absent - falls back to
+ * `DEFAULT_STATUS` rather than quietly widening the list to everything, which
+ * is the one mistake this filter exists to prevent.
+ */
+function readStatus(value: string | null): UserStatus | undefined {
+  if (value === ALL_STATUSES) return undefined
+  return isUserStatus(value) ? value : DEFAULT_STATUS
 }
 
 /**
@@ -110,6 +129,14 @@ function totalPagesOf({ total, pageSize }: UserListResponse): number {
  * Admin user management: the list, searchable, filterable and paginated, and
  * the create form (`CreateUserDialog`). The page owns the URL state and the
  * query; `UsersTable` renders the rows and owns their edit and delete dialogs.
+ *
+ * It shows the **active** accounts unless the URL says otherwise
+ * (`DEFAULT_STATUS`): a deletion here is soft and a deactivation reversible, so
+ * every removed account stays in the table for ever and an unfiltered list
+ * would grow into a list of mostly former colleagues. The Status select carries
+ * that default rather than hiding it, and `All statuses` is how a deleted row
+ * is found again - which is the only way back, until task 2.13e adds a restore
+ * control.
  *
  * Sorting is server-side: every column header but Actions is a control, the
  * chosen column and direction live in the URL as `sortBy`/`sortDir`, and the
@@ -211,7 +238,11 @@ export function UsersPage() {
   const currentUserId = auth.status === 'authenticated' ? auth.user.id : undefined
   // Sorting is deliberately not part of this: a sort is not a filter, and
   // including one would show "No users match your filters." on an unfiltered,
-  // merely-sorted empty list.
+  // merely-sorted empty list. The defaulted status counts as one, though, so
+  // "No users yet." is reachable only under `?status=all` - the only view in
+  // which it is true. With Active applied, an empty list means the deactivated
+  // and deleted rows did not match, and the Status control says as much right
+  // above the message.
   const filtered =
     filters.q !== undefined || filters.role !== undefined || filters.status !== undefined
 
@@ -266,8 +297,13 @@ export function UsersPage() {
         <div className="flex flex-col gap-2">
           <Label htmlFor="users-status">Status</Label>
           <Select
-            value={filters.status ?? 'all'}
-            onValueChange={(value) => updateFilters({ status: value === 'all' ? undefined : value })}
+            value={filters.status ?? ALL_STATUSES}
+            // The default is stored as absent, so a plain `/users` and "Active,
+            // chosen" are one URL and one history entry - the rule `page` already
+            // follows. Every other choice, `all` included, is written out.
+            onValueChange={(value) =>
+              updateFilters({ status: value === DEFAULT_STATUS ? undefined : value })
+            }
           >
             <SelectTrigger id="users-status" className="w-40">
               <SelectValue />

@@ -240,7 +240,9 @@ e2e/             Playwright end-to-end tests
   and `onOpenChange` refuses every dismissal while the mutation is pending,
   resetting it on the way in so a previous refusal is not still on screen.
   The confirmation's wording promises only what the action does: the delete is
-  soft, so it says the account is kept.
+  soft, so it says the account is kept, and it hands the user's open tickets
+  back to the queue, so it says that too - an admin has to know the queue moves
+  underneath them.
 - **Roles are the `Role` enum, never the strings `"ADMIN"` / `"AGENT"`.**
   Write `Role.ADMIN`, compare with `=== Role.ADMIN`, type with `Role`. The
   source of truth is `enum Role` in `server/prisma/schema.prisma`, which
@@ -442,6 +444,19 @@ below); unset means none.
   `assertNotLastActiveAdmin` is now reachable only from `updateUser`'s
   demotion path. Repeating either call is a no-op that returns the row
   unchanged.
+  **Both removals hand the user's `OPEN` tickets back to the unassigned
+  queue**, inside the same serializable transaction as the removal itself
+  (`unassignOpenTickets` in `services/users.ts`), so there is no instant where
+  the account is suspended and an open ticket still names it. `OPEN` only: on a
+  `RESOLVED` or `CLOSED` ticket the assignee has stopped being a job queue and
+  become the record of who dealt with it, which is the whole reason the row is
+  soft-deleted rather than removed. `PATCH { active: true }` does **not** put
+  them back - nothing records which tickets were taken, and one another agent
+  has since picked up must not be pulled off them. `Ticket.assignedTo`'s
+  `onDelete: SetNull` is still only a safety net; this is a `updateMany`, and no
+  `User` row is ever removed. `DeleteUserDialog` invalidates `ticketKeys.all`
+  alongside `userKeys.all` for the same reason: the detail view names an
+  assignee that just changed.
   A **blank or absent `password` leaves the account's password alone**; a
   supplied one goes through `setUserPassword()` and then deletes that user's
   sessions, so the old password cannot keep a session alive - which also
@@ -461,7 +476,10 @@ below); unset means none.
   with no `sortBy` it is active first, then newest, then `id` so a row cannot
   straddle two pages - which sinks deleted rows to
   the bottom, interleaved with the deactivated ones rather than below them, so
-  the Status filter rather than the order is what separates the two. That
+  the Status filter rather than the order is what separates the two. **An
+  absent `?status=` still means every row here** - the API's default is
+  unchanged and `?status=all` is a 400, because `all` is a device the page
+  invented for its own URL (see State) and never sends. That
   default is a composite no `sortBy` member names, which is why - unlike the
   ticket list, whose route defaults both parameters - `ListUsersOptions`
   leaves them optional and `services/users.ts` picks `DEFAULT_ORDER_BY` when
@@ -1106,7 +1124,21 @@ any 401, and two list pages that share the same shape.
 The admin user list at `/users` - a table with search, role and status filters,
 sortable column headers and Previous/Next paging, all of its state in the URL
 (`q`, `role`, `status`, `sortBy`, `sortDir`, `page`, `pageSize`) so a reload or
-Back keeps the view (the rows themselves
+Back keeps the view. **It shows the active accounts unless the URL says
+otherwise** (`DEFAULT_STATUS` in the page): removal here is soft and
+deactivation reversible, so every removed account stays in the table for ever
+and an unfiltered list grows into a list of mostly former colleagues. So, unlike
+`role`, an absent `?status=` is not "no filter" - `?status=all` is, the one
+`?status=` value that is not a `UserStatus` and the one the page keeps to
+itself rather than sending (the server would refuse it). An unusable value
+falls back to the default rather than widening the list, choosing Active
+explicitly writes no parameter at all - the rule `page=1` already follows, so
+the canonical URL stays bare - and the Status select reads "Active" on a plain
+`/users`, because a filter the admin cannot see is worse than one they did not
+ask for. "All statuses" is how a deleted row is found again, and the only way
+back until task 2.13e adds a restore control. One knock-on: "No users yet."
+is now reachable only under `?status=all`, the only view where it is true, and
+an empty Active list says "No users match your filters." (the rows themselves
 are rendered by `components/UsersTable.tsx`, which the page hands its data
 to, whose Status cell is three-way - Active / Inactive / Deleted, the last
 from `deletedAt` - and whose Actions column carries a per-row edit button and,
@@ -1202,8 +1234,14 @@ and the form-level error in `errors.root` (see Conventions → Forms);
 
 Testing: Playwright is set up in `e2e/` with its own database and ports (see
 Testing above); specs cover login, sign-out, protected routes, roles, the API
-guards, deactivation and deletion, and sorting on both lists; no e2e spec covers
-the ticket detail page yet. Vitest component tests cover both list pages and the
+guards, deactivation and deletion, the users list's active-by-default Status
+filter, and sorting on both lists; no e2e spec covers the ticket detail page
+yet, and none covers a removal unassigning the user's open tickets. **The specs
+touching the Status default (`deletion.spec.ts`, `user-management.spec.ts`) have
+not been run since they were changed**: a run from Claude Code resets
+`helpdesk_test` through `prisma migrate reset --force`, which Prisma 7 refuses
+without `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION`, and consent was not
+given. They typecheck; that is all that has been verified. Vitest component tests cover both list pages and the
 detail page (`UsersPage.test.tsx`, `TicketsPage.test.tsx`,
 `TicketDetailPage.test.tsx`).
 

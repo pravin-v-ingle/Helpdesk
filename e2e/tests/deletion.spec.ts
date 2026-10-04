@@ -262,10 +262,24 @@ function rowFor(page: Page, email: string) {
   return page.getByRole("row").filter({ hasText: email });
 }
 
-/** Opens `/users` narrowed to one test's own rows and waits for the heading. */
-async function openUsersPage(page: Page, token: string) {
-  await page.goto(`/users?q=${token}`);
+/**
+ * Opens `/users` narrowed to one test's own rows and waits for the heading.
+ *
+ * `status` names the Status filter explicitly, which a test needs whenever a
+ * row it created is not active: the page defaults to `active` when the URL
+ * names no status, so a deleted or suspended row is not on the default view at
+ * all. `all` is the page's own sentinel for every state and never reaches the
+ * server.
+ */
+async function openUsersPage(page: Page, token: string, status?: string) {
+  await page.goto(status === undefined ? `/users?q=${token}` : `/users?q=${token}&status=${status}`);
   await expect(page.getByRole("heading", { name: "Users" })).toBeVisible();
+}
+
+/** The Status select, and the option a click on it opens. */
+async function chooseStatus(page: Page, option: string) {
+  await page.getByRole("combobox", { name: "Status" }).click();
+  await page.getByRole("option", { name: option }).click();
 }
 
 test.describe("Deleting a user from the users page", () => {
@@ -327,7 +341,10 @@ test.describe("Deleting a user from the users page", () => {
     expect((await fetchUser(request, agent.id)).deletedAt).toBeNull();
   });
 
-  test("confirming keeps the row in the list, reading Deleted", async ({ page, request }) => {
+  test("confirming takes the row off the default view, and it reads Deleted under All statuses", async ({
+    page,
+    request,
+  }) => {
     const token = groupToken("confirm");
     const agent = await createUser(request, {
       name: "Doomed Agent",
@@ -343,8 +360,16 @@ test.describe("Deleting a user from the users page", () => {
     await dialog.getByRole("button", { name: "Delete user" }).click();
 
     await expect(page.getByRole("alertdialog")).toHaveCount(0);
-    // A soft delete: the row is still listed, with the Status badge changed -
-    // so the list really refetched after the mutation.
+    // The list shows the active accounts unless the URL says otherwise, so the
+    // refetch the mutation triggered takes the row off this view - which is
+    // also how we know the list refetched at all.
+    await expect(row).toHaveCount(0);
+    await expect(page.getByText("No users match your filters.")).toBeVisible();
+
+    // The delete is still soft, though: under `All statuses` the same row is
+    // there with its Status cell changed, rather than gone.
+    await chooseStatus(page, "All statuses");
+    await expect(page).toHaveURL(`/users?q=${token}&status=all`);
     await expect(row).toBeVisible();
     await expect(row.getByText("Deleted", { exact: true })).toBeVisible();
     expect((await fetchUser(request, agent.id)).deletedAt).not.toBeNull();
@@ -365,12 +390,13 @@ test.describe("Deleting a user from the users page", () => {
     });
     await deleteUser(request, removed.id);
 
-    await openUsersPage(page, token);
+    // `all` to begin with, because the deleted row is not on the default view:
+    // narrowing to Deleted below has to be visible as a narrowing.
+    await openUsersPage(page, token, "all");
     await expect(rowFor(page, kept.email)).toBeVisible();
     await expect(rowFor(page, removed.email)).toBeVisible();
 
-    await page.getByRole("combobox", { name: "Status" }).click();
-    await page.getByRole("option", { name: "Deleted" }).click();
+    await chooseStatus(page, "Deleted");
 
     // The filter lives in the URL, so a reload or Back keeps this view.
     await expect(page).toHaveURL(new RegExp(`\\?q=${token}&status=deleted$`));

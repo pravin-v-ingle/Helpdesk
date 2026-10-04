@@ -74,9 +74,11 @@ describe('DeleteUserDialog', () => {
     const dialog = await open(user)
 
     // The wording has to admit that the row survives: the delete is soft, so
-    // tickets the person handled still name them.
-    expect(within(dialog).getByText(/The account is kept/)).toBeInTheDocument()
+    // tickets the person handled still name them. And that the queue moves:
+    // the server hands their open tickets back.
+    expect(within(dialog).getByText(/The account is\s+kept/)).toBeInTheDocument()
     expect(within(dialog).getByText(/restore it later/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/open tickets go\s+back to the unassigned queue/)).toBeInTheDocument()
     expect(mockedApiFetch).not.toHaveBeenCalled()
   })
 
@@ -93,6 +95,9 @@ describe('DeleteUserDialog', () => {
     expect(mockedApiFetch).toHaveBeenCalledTimes(1)
     expect(mockedApiFetch).toHaveBeenCalledWith('/api/users/user-agent', { method: 'DELETE' })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['users'] })
+    // The delete unassigns their open tickets server-side, so every cached
+    // ticket is stale too.
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['tickets'] })
   })
 
   it('sends nothing when Cancel is chosen', async () => {

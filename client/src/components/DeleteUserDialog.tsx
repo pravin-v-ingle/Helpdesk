@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { ApiError, type PublicUser } from '../lib/api.ts'
+import { ticketKeys } from '../lib/tickets.ts'
 import { deleteUser, userKeys } from '../lib/users.ts'
 
 const NETWORK_ERROR = 'Could not reach the server. Please try again.'
@@ -25,7 +26,9 @@ const NETWORK_ERROR = 'Could not reach the server. Please try again.'
  * overlay does not dismiss it - only Cancel or Escape.
  *
  * Deleting is soft (`DELETE /api/users/:id` sets `deletedAt` and `active:
- * false`), which is why the description promises only what happens. The
+ * false`), which is why the description promises only what happens - including
+ * that the server hands their open tickets back to the unassigned queue, since
+ * an admin choosing this has to know the queue moves underneath them. The
  * server refuses to delete an admin; `UsersTable` does not render this button
  * on an admin row, so that refusal is a boundary rather than something an
  * admin is expected to run into.
@@ -36,7 +39,14 @@ export function DeleteUserDialog({ user }: { user: PublicUser }) {
 
   const mutation = useMutation({
     mutationFn: () => deleteUser(user.id),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: userKeys.all }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: userKeys.all })
+      // The server unassigns the open tickets this user held, so any cached
+      // ticket is stale - `all` rather than `lists()` because it is the detail
+      // view that names an assignee, and nothing here has a fresh copy of it
+      // to protect.
+      void queryClient.invalidateQueries({ queryKey: ticketKeys.all })
+    },
   })
 
   const error = mutation.error
@@ -74,8 +84,9 @@ export function DeleteUserDialog({ user }: { user: PublicUser }) {
         <AlertDialogHeader>
           <AlertDialogTitle>Delete {user.name}?</AlertDialogTitle>
           <AlertDialogDescription>
-            They will be signed out everywhere and cannot sign in again. The account is kept, so
-            tickets they handled still show their name, and you can restore it later.
+            They will be signed out everywhere and cannot sign in again. Their open tickets go
+            back to the unassigned queue; resolved and closed ones keep their name. The account is
+            kept, so you can restore it later.
           </AlertDialogDescription>
         </AlertDialogHeader>
 

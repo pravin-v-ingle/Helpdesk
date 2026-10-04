@@ -11,9 +11,10 @@ import { signInAs } from "./helpers/auth.ts";
 
 /**
  * Admin user management on `/users`, happy paths only: creating a user through
- * the "Add user" dialog, reading the list (columns, search, the Role filter,
- * sorting, paging, and the URL state behind all of them), and one journey that
- * walks a single account through create, read, update and delete in order.
+ * the "Add user" dialog, reading the list (columns, search, the Role and Status
+ * filters, sorting, paging, and the URL state behind all of them), and one
+ * journey that walks a single account through create, read, update and delete
+ * in order.
  *
  * Refusals and validation live elsewhere on purpose - `user-edit.spec.ts` has
  * the duplicate email and the short password, `deletion.spec.ts` and
@@ -92,10 +93,20 @@ function usersTable(page: Page) {
   return page.getByRole("table", { name: "Users" });
 }
 
+/** The Status select, and the option a click on it opens. */
+async function chooseStatus(page: Page, option: string) {
+  await page.getByRole("combobox", { name: "Status" }).click();
+  await page.getByRole("option", { name: option }).click();
+}
+
 /**
  * Opens `/users`, usually narrowed to one test's own rows, and waits for the
  * real table rather than the skeleton. `search` is the query string without
- * its `?`; empty means the unfiltered list.
+ * its `?`; empty means the unfiltered list - which is still only the *active*
+ * accounts, because the page defaults the Status filter to `active` when the
+ * URL names no status. A test with a suspended or deleted row of its own has
+ * to say `status=all` (the page's own sentinel for every state, which never
+ * reaches the server) or name the state it wants.
  */
 async function openUsersPage(page: Page, search: string) {
   await page.goto(search === "" ? "/users" : `/users?${search}`);
@@ -330,6 +341,48 @@ test.describe("Reading the users list", () => {
     await expect(rowFor(page, agent.email)).toHaveCount(0);
   });
 
+  test("shows only the active accounts until the Status filter says otherwise", async ({
+    page,
+    request,
+  }) => {
+    const token = groupToken("status-default");
+    const live = await createUser(request, {
+      name: "Default Visible Agent",
+      email: emailFor(token, "live"),
+    });
+    const suspended = await createUser(request, {
+      name: "Default Hidden Agent",
+      email: emailFor(token, "suspended"),
+    });
+    await deactivateUser(request, suspended.id);
+
+    // No `status` in the URL, which the page reads as `active` rather than as
+    // "no filter": removal here is soft, so an unfiltered list would fill up
+    // with former colleagues for good.
+    await openUsersPage(page, `q=${token}`);
+    const status = page.getByRole("combobox", { name: "Status" });
+    await expect(status).toContainText("Active");
+    await expect(rowFor(page, live.email)).toBeVisible();
+    await expect(rowFor(page, suspended.email)).toHaveCount(0);
+    await expect(page.getByText("Showing 1–1 of 1")).toBeVisible();
+
+    // `all` is the explicit "every row" spelling, and the only `?status=`
+    // value the server would refuse - the page resolves it to no parameter.
+    await chooseStatus(page, "All statuses");
+
+    await expect(page).toHaveURL(`/users?q=${token}&status=all`);
+    await expect(rowFor(page, live.email)).toBeVisible();
+    await expect(rowFor(page, suspended.email)).toBeVisible();
+    await expect(page.getByText("Showing 1–2 of 2")).toBeVisible();
+
+    // Choosing Active again writes no parameter at all, so the default view
+    // and "Active, chosen" are one URL rather than two history entries.
+    await chooseStatus(page, "Active");
+
+    await expect(page).toHaveURL(`/users?q=${token}`);
+    await expect(rowFor(page, suspended.email)).toHaveCount(0);
+  });
+
   test("Next and Previous move between pages and stop at the ends", async ({ page, request }) => {
     const token = groupToken("paging");
     const agents: PublicUser[] = [];
@@ -494,7 +547,10 @@ test.describe("Sorting the users list", () => {
     });
     await deactivateUser(request, suspended.id);
 
-    await openUsersPage(page, `q=${token}`);
+    // `status=all`, or the suspended row is not on the page to be ordered: the
+    // list shows only the active accounts by default. The server still gets no
+    // `status` parameter, so this is its composite default order.
+    await openUsersPage(page, `q=${token}&status=all`);
     await expect(page.getByText("Showing 1–2 of 2")).toBeVisible();
     // Both states are on screen, so the order below is about these two rows
     // rather than about a row that failed to render.
@@ -582,7 +638,14 @@ test.describe("A user's whole lifecycle", () => {
     await confirm.getByRole("button", { name: "Delete user" }).click();
 
     await expect(page.getByRole("alertdialog")).toHaveCount(0);
-    // A soft delete: the same row, still carrying the edited name, now Deleted.
+    // The default view is the active accounts, so the deleted row leaves it.
+    await expect(row).toHaveCount(0);
+    await expect(page.getByText("No users match your filters.")).toBeVisible();
+
+    // A soft delete, though: under All statuses it is the same row, still
+    // carrying the edited name, now reading Deleted.
+    await chooseStatus(page, "All statuses");
+    await expect(page).toHaveURL(`/users?q=${token}&status=all`);
     await expect(row).toBeVisible();
     await expect(row).toContainText(renamed);
     await expect(row.getByText("Deleted", { exact: true })).toBeVisible();

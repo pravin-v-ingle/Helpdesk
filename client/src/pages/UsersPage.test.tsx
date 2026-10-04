@@ -223,7 +223,7 @@ describe('UsersPage', () => {
 
     expect(mockedApiFetch).toHaveBeenCalledTimes(1)
     expect(mockedApiFetch).toHaveBeenCalledWith(
-      '/api/users?page=1&pageSize=20',
+      '/api/users?status=active&page=1&pageSize=20',
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
   })
@@ -248,13 +248,14 @@ describe('UsersPage', () => {
     )
     await page.table()
 
-    // Blank search dropped, unknown role, status and sort column dropped, page
+    // Blank search dropped, unknown role and sort column dropped, page
     // defaulted, page size clamped to the server's maximum. `sortDir` goes
-    // with the column it has no business without.
-    expect(requestedPaths()).toEqual(['/api/users?page=1&pageSize=100'])
+    // with the column it has no business without. An unusable status falls
+    // back to the default rather than widening the list to everything.
+    expect(requestedPaths()).toEqual(['/api/users?status=active&page=1&pageSize=100'])
     expect(screen.getByLabelText('Search')).toHaveValue('')
     expect(screen.getByRole('combobox', { name: 'Role' })).toHaveTextContent('All roles')
-    expect(screen.getByRole('combobox', { name: 'Status' })).toHaveTextContent('All statuses')
+    expect(screen.getByRole('combobox', { name: 'Status' })).toHaveTextContent('Active')
   })
 
   it('debounces typed search into the URL and returns to page 1', async () => {
@@ -274,8 +275,8 @@ describe('UsersPage', () => {
     // asserting it synchronously here races the query and fails intermittently.
     await waitFor(() =>
       expect(requestedPaths()).toEqual([
-        '/api/users?page=2&pageSize=2',
-        '/api/users?q=ada&page=1&pageSize=2',
+        '/api/users?status=active&page=2&pageSize=2',
+        '/api/users?q=ada&status=active&page=1&pageSize=2',
       ]),
     )
   })
@@ -290,7 +291,53 @@ describe('UsersPage', () => {
 
     await waitFor(() => expect(page.search()).toBe('?role=AGENT'))
     await waitFor(() =>
-      expect(requestedPaths()).toContain('/api/users?role=AGENT&page=1&pageSize=20'),
+      expect(requestedPaths()).toContain('/api/users?role=AGENT&status=active&page=1&pageSize=20'),
+    )
+  })
+
+  /**
+   * Removal is soft, so every deactivated and deleted account stays in the
+   * table for ever. The page therefore asks for the active ones unless the URL
+   * says otherwise - and shows that in the control rather than applying a
+   * filter the admin cannot see.
+   */
+  it('lists only the active accounts by default, and says so in the control', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([agent, admin]))
+    const page = renderPage()
+    await page.table()
+
+    expect(requestedPaths()).toEqual(['/api/users?status=active&page=1&pageSize=20'])
+    expect(screen.getByRole('combobox', { name: 'Status' })).toHaveTextContent('Active')
+    // The default is stored as absent, so the canonical URL stays bare.
+    expect(page.search()).toBe('')
+  })
+
+  it('shows every account again through All statuses', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([agent, former, deleted]))
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.table()
+
+    await choose(user, 'Status', 'All statuses')
+
+    await waitFor(() => expect(page.search()).toBe('?status=all'))
+    // `all` is the page's own spelling for "no filter": it never reaches the
+    // server, which would refuse it.
+    await waitFor(() => expect(requestedPaths()).toContain('/api/users?page=1&pageSize=20'))
+    expect(await screen.findByText('Eve Deleted')).toBeInTheDocument()
+  })
+
+  it('returns to the bare URL when Active is chosen explicitly', async () => {
+    mockedApiFetch.mockResolvedValue(listResponse([agent]))
+    const user = userEvent.setup()
+    const page = renderPage('/users?status=deleted')
+    await page.table()
+
+    await choose(user, 'Status', 'Active')
+
+    await waitFor(() => expect(page.search()).toBe(''))
+    await waitFor(() =>
+      expect(requestedPaths()).toContain('/api/users?status=active&page=1&pageSize=20'),
     )
   })
 
@@ -338,7 +385,7 @@ describe('UsersPage', () => {
     for (const label of ['Name', 'Email', 'Role', 'Status', 'Created']) {
       expect(sortHeader(table, label)).toHaveAttribute('aria-sort', 'none')
     }
-    expect(requestedPaths()).toEqual(['/api/users?page=1&pageSize=20'])
+    expect(requestedPaths()).toEqual(['/api/users?status=active&page=1&pageSize=20'])
   })
 
   it('offers no sort on Actions', async () => {
@@ -365,7 +412,7 @@ describe('UsersPage', () => {
     // The refetch follows the URL change by a render, so it is awaited too -
     // asserting it synchronously here races the query and fails intermittently.
     await waitFor(() =>
-      expect(requestedPaths()).toContain('/api/users?sortBy=name&sortDir=asc&page=1&pageSize=20'),
+      expect(requestedPaths()).toContain('/api/users?status=active&sortBy=name&sortDir=asc&page=1&pageSize=20'),
     )
     table = await page.table()
     expect(sortHeader(table, 'Name')).toHaveAttribute('aria-sort', 'ascending')
@@ -374,7 +421,7 @@ describe('UsersPage', () => {
 
     await waitFor(() => expect(page.search()).toBe('?sortBy=name&sortDir=desc'))
     await waitFor(() =>
-      expect(requestedPaths()).toContain('/api/users?sortBy=name&sortDir=desc&page=1&pageSize=20'),
+      expect(requestedPaths()).toContain('/api/users?status=active&sortBy=name&sortDir=desc&page=1&pageSize=20'),
     )
     table = await page.table()
     expect(sortHeader(table, 'Name')).toHaveAttribute('aria-sort', 'descending')
@@ -384,7 +431,7 @@ describe('UsersPage', () => {
     await user.click(within(table).getByRole('button', { name: 'Name' }))
 
     await waitFor(() => expect(page.search()).toBe(''))
-    await waitFor(() => expect(requestedPaths().at(-1)).toBe('/api/users?page=1&pageSize=20'))
+    await waitFor(() => expect(requestedPaths().at(-1)).toBe('/api/users?status=active&page=1&pageSize=20'))
     expect(sortHeader(await page.table(), 'Name')).toHaveAttribute('aria-sort', 'none')
   })
 
@@ -404,7 +451,7 @@ describe('UsersPage', () => {
     await waitFor(() => expect(page.search()).toBe('?sortBy=createdAt&sortDir=desc'))
     await waitFor(() =>
       expect(requestedPaths()).toContain(
-        '/api/users?sortBy=createdAt&sortDir=desc&page=1&pageSize=20',
+        '/api/users?status=active&sortBy=createdAt&sortDir=desc&page=1&pageSize=20',
       ),
     )
   })
@@ -414,7 +461,7 @@ describe('UsersPage', () => {
     const page = renderPage('/users?sortBy=status&sortDir=desc')
     const table = await page.table()
 
-    expect(requestedPaths()).toEqual(['/api/users?sortBy=status&sortDir=desc&page=1&pageSize=20'])
+    expect(requestedPaths()).toEqual(['/api/users?status=active&sortBy=status&sortDir=desc&page=1&pageSize=20'])
     expect(sortHeader(table, 'Status')).toHaveAttribute('aria-sort', 'descending')
     expect(sortHeader(table, 'Name')).toHaveAttribute('aria-sort', 'none')
   })
@@ -431,7 +478,7 @@ describe('UsersPage', () => {
     // which is stored as absent.
     await waitFor(() => expect(page.search()).toBe('?pageSize=2&sortBy=email&sortDir=asc'))
     await waitFor(() =>
-      expect(requestedPaths()).toContain('/api/users?sortBy=email&sortDir=asc&page=1&pageSize=2'),
+      expect(requestedPaths()).toContain('/api/users?status=active&sortBy=email&sortDir=asc&page=1&pageSize=2'),
     )
   })
 
@@ -494,15 +541,17 @@ describe('UsersPage', () => {
     expect(await screen.findByText('Showing 3–3 of 3')).toBeInTheDocument()
     expect(page.search()).toBe('?page=2&pageSize=2')
     expect(requestedPaths()).toEqual([
-      '/api/users?page=99&pageSize=2',
-      '/api/users?page=2&pageSize=2',
+      '/api/users?status=active&page=99&pageSize=2',
+      '/api/users?status=active&page=2&pageSize=2',
     ])
   })
 
   it('tells an empty list apart from an empty filter result', async () => {
     mockedApiFetch.mockResolvedValue(listResponse([]))
 
-    const unfiltered = renderPage()
+    // `all` is the only unfiltered view now that the page defaults to Active,
+    // and so the only one where "no users yet" is a true statement.
+    const unfiltered = renderPage('/users?status=all')
     expect(within(await unfiltered.table()).getByText('No users yet.')).toBeInTheDocument()
     expect(screen.queryByText(/Showing/)).not.toBeInTheDocument()
   })
@@ -541,9 +590,9 @@ describe('UsersPage', () => {
     expect(await screen.findByText(newAgent.name)).toBeInTheDocument()
     expect(bodyRows(await page.table())).toHaveLength(2)
     expect(requestedPaths()).toEqual([
-      '/api/users?page=1&pageSize=20',
+      '/api/users?status=active&page=1&pageSize=20',
       '/api/users',
-      '/api/users?page=1&pageSize=20',
+      '/api/users?status=active&page=1&pageSize=20',
     ])
   })
 
@@ -573,9 +622,9 @@ describe('UsersPage', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(await screen.findByText('Bobby Agent')).toBeInTheDocument()
     expect(requestedPaths()).toEqual([
-      '/api/users?page=1&pageSize=20',
+      '/api/users?status=active&page=1&pageSize=20',
       '/api/users/user-agent',
-      '/api/users?page=1&pageSize=20',
+      '/api/users?status=active&page=1&pageSize=20',
     ])
   })
 
@@ -640,9 +689,9 @@ describe('UsersPage', () => {
     expect(within(rows[0]!).getByText('Bob Agent')).toBeInTheDocument()
     expect(await screen.findByText('Deleted')).toBeInTheDocument()
     expect(requestedPaths()).toEqual([
-      '/api/users?page=1&pageSize=20',
+      '/api/users?status=active&page=1&pageSize=20',
       '/api/users/user-agent',
-      '/api/users?page=1&pageSize=20',
+      '/api/users?status=active&page=1&pageSize=20',
     ])
   })
 
@@ -661,7 +710,7 @@ describe('UsersPage', () => {
     expect(within(dialog).getByLabelText('Email')).toBeInTheDocument()
     expect(within(dialog).getByLabelText('Password')).toBeInTheDocument()
     // Opening the dialog asks the server for nothing.
-    expect(requestedPaths()).toEqual(['/api/users?page=1&pageSize=20'])
+    expect(requestedPaths()).toEqual(['/api/users?status=active&page=1&pageSize=20'])
   })
 
   it('closes the create dialog on Escape, leaving the list untouched', async () => {
@@ -676,7 +725,7 @@ describe('UsersPage', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     // The page behind is reachable again, and nothing was created.
     expect(bodyRows(await page.table())).toHaveLength(1)
-    expect(requestedPaths()).toEqual(['/api/users?page=1&pageSize=20'])
+    expect(requestedPaths()).toEqual(['/api/users?status=active&page=1&pageSize=20'])
   })
 
   it('closes the create dialog on a click outside it', async () => {
@@ -690,7 +739,7 @@ describe('UsersPage', () => {
 
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(bodyRows(await page.table())).toHaveLength(1)
-    expect(requestedPaths()).toEqual(['/api/users?page=1&pageSize=20'])
+    expect(requestedPaths()).toEqual(['/api/users?status=active&page=1&pageSize=20'])
   })
 
   it('discards what was typed when the dialog is dismissed and reopened', async () => {
