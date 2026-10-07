@@ -27,12 +27,19 @@ import { text } from './text.ts'
  * request with a message written by Express rather than by us. Ten thousand
  * characters is around fifteen hundred words - long for a support reply, and
  * short enough that the list view cannot be wrecked by one.
+ *
+ * The ceiling is exported as `MAX_REPLY_LENGTH` because one other place has to
+ * respect it: the polish endpoint hands a rewritten draft back into this same
+ * field, so a model that returned more than this would produce a draft the form
+ * then refuses. The number lives here, with the rule it comes from.
  */
+export const MAX_REPLY_LENGTH = 10_000
+
 export const ticketReplySchema = z.object({
   body: text('Reply')
     .trim()
     .min(1, 'Reply is required.')
-    .max(10_000, 'Reply must be at most 10,000 characters.'),
+    .max(MAX_REPLY_LENGTH, 'Reply must be at most 10,000 characters.'),
 })
 
 export type TicketReplyInput = z.infer<typeof ticketReplySchema>

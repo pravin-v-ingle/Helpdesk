@@ -95,6 +95,33 @@ function proxyList(name: string): string[] {
   return entries;
 }
 
+/**
+ * The OpenAI model the AI features ask. `gpt-5-nano` by default - the cheapest
+ * and fastest of the GPT-5 family, which is the right trade for small text jobs
+ * an agent reads and can discard: rewriting a draft reply, summarising a thread.
+ *
+ * One setting for both rather than one each. They are the same kind of work on
+ * the same size of input, and a knob per feature is a knob nobody sets - if the
+ * two ever want different models, that is the moment to split it.
+ *
+ * Overridable because a model id is the one setting here that goes stale on
+ * somebody else's schedule, and a redeploy to change a string is not worth it.
+ */
+const DEFAULT_OPENAI_MODEL = "gpt-5-nano";
+
+/**
+ * The OpenAI API key, and nothing enforces its presence at startup.
+ *
+ * Every other secret here is `required()` because the server cannot do its job
+ * without it; this one gates two optional buttons. A deployment with no key
+ * still serves tickets, email and sign-in, and the two AI endpoints answer 503
+ * with a sentence the page shows - which is a better failure than a server that
+ * refuses to boot because nobody wanted the AI features.
+ */
+function openAiApiKey(): string | undefined {
+  return process.env.OPENAI_API_KEY?.trim() || undefined;
+}
+
 const port = optionalNumber("PORT", 3000);
 const nodeEnv = process.env.NODE_ENV ?? "development";
 const isProductionEnv = nodeEnv === "production";
@@ -226,6 +253,18 @@ export const env = {
    * mail loop once outbound send lands in 4.12.
    */
   supportEmailAddress: process.env.SUPPORT_EMAIL_ADDRESS?.trim().toLowerCase() || undefined,
+  /**
+   * The OpenAI account the AI features use - the reply polisher and the ticket
+   * summariser. Optional, unlike every other secret here: see `openAiApiKey`
+   * above for why, and `lib/ai.ts` for the 503 an absent key produces.
+   *
+   * This is the one place in the system that talks to a provider other than
+   * Anthropic; `tech-stack.md` records why.
+   */
+  openai: {
+    apiKey: openAiApiKey(),
+    model: process.env.OPENAI_MODEL?.trim() || DEFAULT_OPENAI_MODEL,
+  },
 } as const;
 
 export const isProduction = isProductionEnv;

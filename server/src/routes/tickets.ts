@@ -2,6 +2,8 @@ import { ticketReplySchema } from "@helpdesk/core/schemas/tickets";
 import { Router, type Request } from "express";
 import { TicketCategory, TicketStatus } from "../generated/prisma/enums.ts";
 import { parseBody } from "../lib/validate.ts";
+import { polishReply } from "../services/polish-reply.ts";
+import { summarizeTicket } from "../services/summarize-ticket.ts";
 import { requireAuth } from "../middleware/require-auth.ts";
 import { HttpError } from "../middleware/error-handler.ts";
 import * as tickets from "../services/tickets.ts";
@@ -60,6 +62,51 @@ ticketsRouter.post("/:id/messages", async (req, res) => {
   const author = req.user!;
 
   res.status(201).json({ ticket: await tickets.addReply(id, author, body) });
+});
+
+/**
+ * Rewrite a draft reply and hand it straight back: `{ body }` in, `{ body }`
+ * out, where the second is the first polished by a model.
+ *
+ * A read of the ticket rather than a write to it, which is why it answers 200
+ * and not 201 and why nothing is invalidated on the client. Nothing is stored:
+ * not the draft, not the rewrite. The agent gets the text back in the textarea
+ * they typed it in and decides whether to keep it, so the endpoint cannot put
+ * words on a ticket by itself - which is what makes it safe for it to have no
+ * confirmation step.
+ *
+ * The body is `ticketReplySchema`, the same schema the reply itself uses and the
+ * composer runs: the draft has to be a usable reply before it is worth a round
+ * trip, and an empty one is refused here with the sentence the form would have
+ * shown rather than sent to a model to make something up from.
+ *
+ * Same auth as the rest of this router: `requireAuth`, no role check. The author
+ * is nobody - no message is written - so unlike the reply endpoint there is
+ * nothing here the session needs to supply.
+ */
+ticketsRouter.post("/:id/polish", async (req, res) => {
+  const id = parseTicketId(req.params.id);
+  const { body } = parseBody(ticketReplySchema, req.body ?? {});
+
+  res.json({ body: await polishReply(id, body) });
+});
+
+/**
+ * Summarise the ticket and the conversation on it. No request body - the ticket
+ * in the path is the whole input - and `{ summary }` back.
+ *
+ * **A `POST` that stores nothing and reads nothing of the request.** A `GET`
+ * would be the obvious shape and is the wrong one: this costs money per call and
+ * must never be served from a cache, and a summary is generated rather than
+ * fetched. Every press is a fresh summary of the thread as it stands, which is
+ * the point - see the service for why no summary is ever stored.
+ *
+ * Same auth as the rest of this router: `requireAuth`, no role check.
+ */
+ticketsRouter.post("/:id/summary", async (req, res) => {
+  const id = parseTicketId(req.params.id);
+
+  res.json({ summary: await summarizeTicket(id) });
 });
 
 // --- input validation -------------------------------------------------------

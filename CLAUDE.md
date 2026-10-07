@@ -43,13 +43,20 @@ has no build or transpile step.
 - Database: PostgreSQL with Prisma 7 (driver adapter `@prisma/adapter-pg`;
   client generated to `server/src/generated/prisma`)
 - Auth: Better Auth, email and password, database-backed sessions
-- AI: Claude API via `@anthropic-ai/sdk`, default model `claude-opus-5` (not yet added)
-4- Email: provider-agnostic inbound, one adapter per provider (`server/src/lib/email/`),
+- AI: Claude API via `@anthropic-ai/sdk`, default model `claude-opus-5` (not yet
+  added). **Two exceptions are already built**: the reply polisher and the ticket
+  summariser both call OpenAI `gpt-5-nano` through the Vercel AI SDK (`ai` +
+  `@ai-sdk/openai`), the only non-Anthropic calls in the system - see Polishing a
+  draft reply and Summarising a ticket below, and `tech-stack.md` for why the
+  deviation stands. One `OPENAI_MODEL` serves both, and `OPENAI_API_KEY` is the
+  one optional secret in `env.ts`.
+- Email: provider-agnostic inbound, one adapter per provider (`server/src/lib/email/`),
   chosen by `INBOUND_EMAIL_PROVIDER`; Mailgun is the default because SendGrid
   Inbound Parse has no signature mechanism. Outbound send not yet added.
 - Testing: Playwright end-to-end in `e2e/`, Chromium only, against a separate
   `helpdesk_test` database; Vitest + React Testing Library on jsdom for
-  client component tests (see Testing); no server unit tests yet
+  client component tests, and **`bun test`** for server unit tests - Bun's own
+  runner, no dependency and no configuration (see Testing)
 
 ## Commands
 
@@ -63,12 +70,16 @@ Run from the repository root:
 | `bun run dev:client` | Client only, port 5173 |
 | `bun run build` | Build both workspaces |
 | `bun run typecheck` | Typecheck all workspaces |
-| `bun run test:unit` | Run the client component tests with Vitest (see Testing) |
+| `bun run test:unit` | Run both unit suites - client (Vitest) then server (`bun test`) |
+| `bun run test:unit:client` | The client component tests only |
+| `bun run test:unit:server` | The server unit tests only |
 | `bun run test:e2e` | Run the Playwright end-to-end tests (see Testing) |
 | `cd server && bun run email:test` | POST a signed, provider-shaped email to the inbound webhook (see Tickets and inbound email) |
 
-Run `bun run typecheck` before considering a change complete, and
-`bun run test:unit` when the change touches the client.
+Run `bun run typecheck` and `bun run test:unit` before considering a change
+complete. `bun test` does **not** typecheck, so a test file that has drifted from
+the types it uses passes the suite and fails only the typecheck - which is why
+both commands matter, not just the one that went red last.
 
 ## Layout
 
@@ -889,6 +900,144 @@ nothing is emailed to the requester yet, and the button says "Add reply" rather
 than "Send" - the same rule the delete confirmation follows: the wording
 promises only what the action does.
 
+### Polishing a draft reply
+
+`POST /api/tickets/:id/polish` takes `{ body }` and returns `{ body }` - the same
+draft, rewritten by a model. The only call in the system that is not Anthropic's:
+OpenAI `gpt-5-nano` through the Vercel AI SDK, in `server/src/lib/ai.ts` (the
+provider) and `server/src/services/polish-reply.ts` (the prompt and the rules).
+
+**Nothing is stored.** Not the draft, not the rewrite, no `Message`, no row
+anywhere - the text goes back into the textarea the agent typed it in and they
+decide. That is what makes it safe to ship ahead of the AI in Phase 5 and why it
+needs no confirmation step: a bad rewrite costs one press of Undo, and the
+endpoint cannot put words on a ticket by itself. It is a `POST` that changes
+nothing, so it answers 200, invalidates nothing and is the one request the detail
+page makes that leaves the query cache alone.
+
+Five things it deliberately does:
+
+- **It hangs off a ticket id, because the thread is the context.** A reply
+  rewritten without the question it answers loses the requester's name, the
+  problem and the register the conversation is in, and reads like a form letter.
+  The last six messages are sent, each truncated to 2,000 characters - latency,
+  not correctness, since the tail is what a reply is answering. The thread is
+  read, never written.
+- **The body is `ticketReplySchema`**, the same schema the reply itself uses, so
+  a draft has to be a usable reply before it is worth a round trip and the
+  composer validates once for both. The schema now exports `MAX_REPLY_LENGTH`
+  because the service has to respect it: a rewrite longer than the composer
+  accepts would be a response the form then refuses with nothing on screen to
+  say why, so that is a 502 with a sentence instead.
+- **The instructions forbid three things**: inventing facts (it would put a
+  promise in an agent's name that nobody made), answering the student rather than
+  rewriting the draft (it would replace the agent's judgement with the model's),
+  and wrapping the result in commentary (the agent would have to edit the output
+  of the thing meant to save them editing). A draft that tries to talk to the
+  model past those is a prompt injection an agent typed at themselves: it costs
+  them a bad rewrite and nothing more, because the output is text in a textarea
+  and nothing downstream executes, stores or sends it.
+- **`store: false`, `reasoningEffort: 'low'`, `textVerbosity: 'low'`.** The first
+  asks OpenAI to retain nothing, because the prompt carries a student's own words
+  and `tech-stack.md` still lists third-party LLMs and student data as an open
+  question. The other two keep a copy-edit fast enough to press a button for.
+- **Every provider failure is one 502 with one sentence**, the real error logged
+  rather than returned - it can carry the request body, which is a student's
+  message. An empty answer is a 502 too: returning it would wipe the draft, the
+  one outcome this feature must not have. The order of refusals is 404 (no such
+  ticket, checked before anything is paid for), 400 (empty draft), 503 (this
+  server has no `OPENAI_API_KEY`), 502 (the provider).
+
+On the client `polishReply()` in `lib/tickets.ts` is the API client, and the
+composer grows a **Polish** button *before* Add reply - that is the order of the
+job: write it, improve it, add it. It is `outline` rather than the default, so
+the button that actually puts the reply on the ticket stays the one the eye lands
+on. Four rules it follows:
+
+- **The draft it replaced is kept in component state**, and a **Undo polish**
+  button beside a note saying the text was rewritten puts it back. A button that
+  silently overwrites what somebody typed is one an agent only dares press on a
+  draft they did not care about. The kept draft is forgotten when the reply
+  lands - a stored reply is not something Undo should rewind.
+- **The draft is remembered only once the request comes back**, so a refusal
+  leaves the textarea exactly as it was and offers no Undo for something that
+  never happened. Refusals go to `errors.root`, where the submit's also go: same
+  textarea, same sentence to read.
+- **An empty draft is a disabled button, not a validation message.** There is no
+  mistake to report, and asking a model to improve nothing would be inviting it
+  to write the reply itself.
+- **One `busy` flag for both requests**, so either in flight disables the
+  textarea and both buttons: a reply cannot be added out from under a rewrite
+  about to replace it, and a rewrite cannot be asked for twice at once.
+  `setValue(..., { shouldValidate: true })` because the rewrite is what gets
+  submitted, so it is the text the schema has to be happy with.
+
+### Summarising a ticket
+
+`POST /api/tickets/:id/summary` takes **no body** and returns `{ summary }`: the
+ticket and the conversation on it, summarised by a model.
+`server/src/services/summarize-ticket.ts` holds the prompt and the rules; the
+provider is the same `lib/ai.ts` the polisher uses.
+
+**Nothing is stored, and that is the design rather than a stage on the way to
+storing it.** There is no `Ticket.summary` column and never should be: a saved
+summary is wrong the moment the next message arrives, and an agent who reads "the
+student is waiting on a refund date" will not notice the refund was paid two
+replies ago. A stale summary is worse than none, because it is read *instead of*
+the thread. Regenerating costs a fraction of a penny; being wrong costs the
+student. So every press is a fresh summary of the thread as it stands, there is no
+invalidation to get right, and the endpoint may be asked again at any time.
+
+Why a `POST` with no request body, which looks like it should be a `GET`: this
+costs money per call and must never be served from a cache, and a summary is
+generated rather than fetched. The route reads nothing off the request but the id.
+
+What it sends, and how it differs from the polisher:
+
+- **The whole conversation, up to 30 messages, each truncated to 4,000
+  characters** - against the polisher's last 6 at 2,000. A summary is a claim
+  about the whole thread, and cutting the middle out of one produces a summary
+  that is confidently wrong about what was agreed. When the cap bites the
+  **oldest** go: a summary missing the opening request is visibly incomplete,
+  where one missing the latest exchange reads as complete and is not.
+- **Each message is labelled with its sender *and its timestamp***, which the
+  polisher's prompt omits: "what is still outstanding" usually turns on how long
+  ago the last thing happened.
+- **The ticket's own fields too** - subject, student, status, opened, message
+  count - so the summary can say where the ticket stands, not only what was said.
+- **The instructions ask for three things in order**: what the student wants, what
+  has been done or promised, what is outstanding; at most 120 words; plain text,
+  with short plain labels allowed but no markdown. The prohibitions are the
+  polisher's and matter more here, because an agent reads a summary instead of the
+  thread: invent nothing, do not resolve a contradiction, do not address the
+  student, do not suggest a reply.
+- **`store: false`**, as the polisher does, and it matters most on this call: the
+  prompt is the entire conversation, so it carries more of a student's own words
+  than anything else the system sends anywhere.
+
+Refusals, in the order they can happen: **404** for an unusable id or a ticket
+that is gone; **400** `There are no messages on this ticket to summarise.` -
+checked before the model is paid for, because a model handed an empty thread would
+invent one and the invention would be read as the ticket's history; **503** when
+this server has no `OPENAI_API_KEY`; **502** for a provider failure, an empty
+answer (shown as-is it would read as "this ticket has nothing in it", a claim the
+model never made) or one over `MAX_SUMMARY_LENGTH` (2,000 - longer than that is
+not a summary).
+
+On the client `summarizeTicket()` in `lib/tickets.ts` is the API client and
+`TicketSummary` in `TicketDetailPage.tsx` is the control: a **Summary** section
+between the thread and the composer, in that order because that is the order of
+the job - read what happened, or have it read to you, then answer. A `useMutation`
+and deliberately **not** a `useQuery`: a query would hand back a cached answer, and
+the whole point is that there isn't one. So the summary lives in the mutation's
+state, is thrown away on navigation, and the button says what a second press does
+- "Summarise ticket", then "Summarising…", then **"Regenerate summary"**. A note
+beside it says the text is written by AI and not saved, because a summary that
+looked saved would be trusted later when the thread had moved on. An empty thread
+is a disabled button with a note rather than a refusal after the fact, the same
+treatment Polish gives an empty draft; the previous summary stays on screen under
+`aria-busy` while a new one is written, rather than the section collapsing.
+
 `GET /api/assignees` (`routes/assignees.ts`) is the list of people a ticket can
 go to: active accounts only, `{ id, name, email, role }`, by name, unpaginated.
 It is `requireAuth` with no role check, which is the whole reason it exists -
@@ -903,8 +1052,9 @@ covered by the same `active: true` filter, because a deleted row always carries
 
 ## Testing
 
-Two layers: Vitest component tests inside `client/`, and Playwright
-end-to-end tests in `e2e/`. `tech-stack.md` has the reasoning for both.
+Three layers: Vitest component tests inside `client/`, `bun test` unit tests
+inside `server/`, and Playwright end-to-end tests in `e2e/`. `tech-stack.md` has
+the reasoning for the first and the last.
 
 ### Component tests
 
@@ -928,7 +1078,7 @@ stays in `e2e/`.
 
 | Command | Runs |
 |---|---|
-| `bun run test:unit` | the whole client suite once (CI mode) |
+| `bun run test:unit:client` | the whole client suite once (CI mode) |
 | `cd client && bun run test:watch` | the suite in watch mode |
 | `cd client && bunx vitest run src/pages/UsersPage.test.tsx` | one file |
 | `cd client && bunx vitest run src/pages/UsersPage.test.tsx -t "debounces"` | tests whose name matches |
@@ -1048,6 +1198,70 @@ missing `mockReset`, a select opened by click, or a timer left running - not
 a reason to add `retry` or `test.skip`. If a component test reveals a bug in
 the page rather than the test, fix the page and say so.
 
+### Server unit tests
+
+`bun test` inside the `server/` workspace, beside the module each one covers.
+The runtime is Bun and the server has no build step, so its own runner needs no
+dependency and no configuration - Vitest is the client's because Vite's jsdom
+setup is built around it. The five so far all belong to the two AI features -
+`src/services/polish-reply.test.ts`, `src/services/summarize-ticket.test.ts`,
+`src/routes/tickets.polish.test.ts`, `src/routes/tickets.summary.test.ts` and
+`src/lib/ai.test.ts`; read them, and `src/test/ai-fakes.ts`, before adding more.
+
+| Command | Runs |
+|---|---|
+| `bun run test:unit:server` | the whole server suite (from the repository root) |
+| `cd server && bun test` | the same |
+| `cd server && bun test src/services/polish-reply.test.ts` | one file |
+| `cd server && bun test -t "refuses an empty answer"` | tests whose name matches |
+
+**What they cover**: a service's own logic with its outside edges replaced - the
+prompt it builds, the options it sends, its guards, and how it turns a failure
+into a status and a sentence. Nothing in `server/` reaches Postgres or a provider
+from a unit test. Anything that needs the real database, a real session or a real
+model stays in `e2e/` or stays verified by hand.
+
+**Four rules, all of which the polish tests exist to demonstrate:**
+
+1. **`mock.module` is process-global and `bun test` has no per-file isolation.**
+   Every file runs in one process with one module registry, so whichever test
+   file loads a module first binds it for the whole run. Two files registering
+   their own fake for the same module is a test that passes alone and fails in
+   the suite - which is exactly what happened here before the fakes were moved
+   into one module. **Register every fake for a feature in one module** that each
+   test file imports first (`src/test/ai-fakes.ts` - one module for both AI
+   features, since they go through the same two edges), expose the state as
+   mutable objects rather than values - a primitive export is snapshotted at
+   import and later writes to it are invisible - and give it a `resetFakes()` for
+   `beforeEach`. Do not pass `--concurrent`: two files driving one set of fakes at
+   once would be the same bug again.
+2. **Import `src/test/env-defaults.ts` first** (the fakes module already does).
+   `env.ts` validates at import time and calls `process.exit(1)` on a missing
+   variable, which in a test run kills the process with no failing test to explain
+   it - and almost everything reaches `env.ts` through
+   `middleware/error-handler.ts`. The defaults fill only what is absent, so a real
+   `server/.env` still wins, and nothing is ever connected to.
+3. **Replace the boundary, not the library.** The model is the AI SDK's own
+   `MockLanguageModelV4` from `ai/test`, so `generateText` runs for real and the
+   assertions are made against the call the service actually built. A stubbed
+   `generateText` would pin nothing. The same instinct as the client's "mock only
+   `apiFetch`".
+4. **Annotate a fake's return type**, because `bun test` does not typecheck: an
+   un-annotated fake that has drifted from the interface passes the suite and
+   surfaces later as a confusing failure somewhere else. This is also why
+   `@ai-sdk/provider` is a declared devDependency - it is a transitive package of
+   `ai`, and Bun's isolated `node_modules` does not make those resolvable, so
+   without declaring it every type `ai/test` imports silently degrades and
+   assignability checks stop meaning anything.
+
+A route is tested by mounting its router on a bare Express app with the real
+`express.json()` and the real `errorHandler`, then `app.listen(0)` and `fetch`
+against the port the OS picked - no supertest, and no clash with a dev server on
+3000. `requireAuth` is faked to a pass-through; whether it is actually *mounted*
+is an e2e question. Those tests deliberately run the real service underneath, so
+what they pin is that a refusal four layers down arrives as the right status with
+the right sentence.
+
 ### End-to-end tests
 
 Playwright end-to-end tests live in the `e2e/` workspace and run with
@@ -1093,7 +1307,9 @@ less the queue).
 
 Shared: `core/` holds `createUserSchema`, validated by the dialog and by
 `POST /api/users` alike, and `ticketReplySchema`, validated by the reply
-composer and by `POST /api/tickets/:id/messages` alike. Nothing else about a
+composer, by `POST /api/tickets/:id/messages` and by
+`POST /api/tickets/:id/polish` alike - whose `MAX_REPLY_LENGTH` the polish
+service imports, so a rewrite cannot come back longer than the form accepts. Nothing else about a
 ticket is in `core/`: no form posts a ticket, the webhook body is a provider's
 shape validated in its adapter, and a PATCH carries three server-owned enum
 fields the route reads one key at a time.
@@ -1110,7 +1326,11 @@ SendGrid adapter behind one `InboundEmail` contract, and the ticket queue at
 changes its assignee, status or category and `POST /api/tickets/:id/messages`
 appends an agent's reply - stored on the ticket, emailed nowhere - with `GET
 /api/assignees` listing who a ticket can go to; all signed-in, none
-admin-only. `bun run email:test` exercises the whole inbound path locally
+admin-only. `POST /api/tickets/:id/polish` rewrites a draft reply and `POST
+/api/tickets/:id/summary` summarises the ticket and its thread, both with OpenAI
+`gpt-5-nano` through the Vercel AI SDK and both storing nothing - the only
+non-Anthropic calls in the system, and the only things that work off an optional
+secret (`OPENAI_API_KEY`; without it, a 503 the page shows). `bun run email:test` exercises the whole inbound path locally
 without a provider account. See Tickets and inbound email above for the webhook's
 position above `express.json()`, the dedupe key, the two-phase write and the
 threading rules.
@@ -1183,8 +1403,12 @@ so the visual order and the reading order agree. The sidebar is
 thread column is `minmax(0,1fr)` so an unbroken line in a message cannot widen
 the page. The skeleton repeats the same grid - and carries a block for the
 composer too - so nothing jumps sideways or grows downwards when the response
-lands. The reply composer sits under the thread in the left column; see
-Replying to a ticket above.
+lands. Under the thread in the left column, in this order: a **Summary** section
+whose button summarises the ticket and its conversation afresh on every press and
+keeps nothing, then the reply composer, with a **Polish** button before Add reply
+that sends the draft to be rewritten and an **Undo polish** beside the note that
+says it was. See Replying to a ticket, Polishing a draft reply and Summarising a
+ticket above.
 
 The Details card is a description list - Status, Category, Assigned to,
 Requester, Opened, Last message - with the label above each value, because a
@@ -1243,7 +1467,21 @@ not been run since they were changed**: a run from Claude Code resets
 without `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION`, and consent was not
 given. They typecheck; that is all that has been verified. Vitest component tests cover both list pages and the
 detail page (`UsersPage.test.tsx`, `TicketsPage.test.tsx`,
-`TicketDetailPage.test.tsx`).
+`TicketDetailPage.test.tsx`, whose polish tests fake the endpoint by path - both
+of the page's POSTs are posts to a path under the ticket, and only the polish
+answers with text instead of a ticket).
+
+The two AI features are also the only things in `server/` with unit tests, under
+`bun test`: `services/polish-reply.test.ts` and `services/summarize-ticket.test.ts`
+for the prompts, the provider options and the guards,
+`routes/tickets.polish.test.ts` and `routes/tickets.summary.test.ts` for the HTTP
+contracts through a real Express app, and `lib/ai.test.ts` for the configured and
+unconfigured key. `src/test/ai-fakes.ts` owns every fake they share and
+`src/test/env-defaults.ts` keeps them off a developer's `.env`; see Testing →
+Server unit tests, which is also where the `mock.module` rule that shape exists
+for is written down. **No test anywhere reaches a real model.** Both endpoints have
+been exercised against a running API with a real key - a summary came back
+correctly from a live `gpt-5-nano` call - and their 401, 404 and 503 paths too.
 
 Not built yet, in this feature's area: an agent's reply is stored on the ticket
 but never sent, so a student still hears nothing back; no record of who changed
@@ -1251,9 +1489,11 @@ what, so nothing says who closed a ticket or reassigned it - a reply is the one
 action that names its author, through the message's own `fromName`; no job queue, so the webhook converts inline - `RawEmail.processedAt IS
 NULL` is the seam a worker slots into (4.2, 4.5); no provider account or real
 inbound route (4.1); attachment metadata is stored but the bytes are dropped; no
-rate limit on the webhook (8.3); nothing outbound at all, so no student ever
-receives a reply (4.12-4.15); and no AI, so every ticket arrives uncategorised
-(Phase 5). No seed script for sample tickets (3.4) - `email:test` makes better
+rate limit on the webhook (8.3) and none on the two AI endpoints either, which
+are the only routes here that cost money per call; nothing outbound at all, so no
+student ever receives a reply (4.12-4.15); and no AI on a ticket itself, so every
+one arrives uncategorised (Phase 5) - the reply polisher and the ticket summariser
+are the only model calls built, and neither writes anything to a ticket. No seed script for sample tickets (3.4) - `email:test` makes better
 demo data for this feature.
 
 Elsewhere: a restore or suspend control on `/users` (task 2.13e; the API

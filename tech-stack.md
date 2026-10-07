@@ -10,7 +10,7 @@ Technology decisions for the AI-powered ticket management system. See `project-s
 | Backend    | Node.js + Express + TypeScript                 |
 | Database   | PostgreSQL                                     |
 | ORM        | Prisma                                         |
-| AI         | Claude API (Anthropic)                         |Create
+| AI         | Claude API (Anthropic); OpenAI `gpt-5-nano` via the Vercel AI SDK for the reply polisher |Create
 | Email      | Mailgun by default, SendGrid adapter alongside  |
 | Auth       | Database-backed sessions                       |
 | Deployment | Docker containers on a cloud provider          |
@@ -162,6 +162,36 @@ Still outstanding: a scheduled task to delete expired sessions.
 - **Prompt caching** on the stable prefix (system prompt, category definitions, tone guide) - the largest cost lever, since that prefix is identical on every ticket.
 - **All calls are logged** to an `llm_calls` table: model, prompt version, input, output, tokens, cost, latency, ticket ID. Required for the audit trail (was a reply written by AI or a human) and for debugging classification.
 - API keys never reach the frontend. All Claude calls originate from the backend.
+
+### The one exception: OpenAI for the two on-demand text features
+
+Two buttons on the ticket detail page are the only calls in the system that do
+not go to Anthropic: **Polish**, which rewrites an agent's draft reply, and
+**Summarise**, which summarises the ticket and the conversation on it. Both go to
+OpenAI's `gpt-5-nano` through the **Vercel AI SDK** (`ai` + `@ai-sdk/openai`) and
+hand the text straight back; the server stores neither the input nor the result.
+
+Why it is a deviation rather than a change of direction:
+
+- It was asked for as `gpt-5-nano` specifically. The AI the system is actually
+  built around (Phase 5) stays on Claude: classification, and the summary and
+  suggested reply that are *stored on a ticket* and feed the agent's workflow.
+  These two are a different thing - text an agent asks for, reads and discards,
+  with nothing written to the database.
+- The AI SDK rather than `openai` directly, because it is a provider-agnostic
+  client: moving these calls to Claude later is a one-line change in
+  `server/src/lib/ai.ts`, with the services above it untouched. One model setting
+  (`OPENAI_MODEL`) serves both features rather than one each - the same kind of
+  work on the same size of input, and a knob per feature is a knob nobody sets.
+- `OPENAI_API_KEY` is the only **optional** secret in `env.ts`. A deployment
+  without one boots and works; the button answers 503 with a sentence the
+  composer shows. Nothing else in the system depends on it.
+- The prompts carry a student's own words, so both calls set `store: false` -
+  OpenAI is asked to retain nothing. That does not settle the open question
+  below about third-party LLMs and student data; it is the least a call can do
+  while the question is open. The summary is the wider exposure of the two: its
+  prompt is the whole conversation, where the polisher sends only the last six
+  messages. Neither stores anything on either side.
 
 ## Email
 

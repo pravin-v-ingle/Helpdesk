@@ -9,7 +9,9 @@
     "typecheck": "bun run --filter '*' typecheck",
     "dev:client": "bun run --cwd client dev",
     "dev:server": "bun run --cwd server dev",
-    "test:unit": "bun run --cwd client test",
+    "test:unit": "bun run test:unit:client && bun run test:unit:server",
+    "test:unit:client": "bun run --cwd client test",
+    "test:unit:server": "bun run --cwd server test",
     "test:e2e": "bun run --cwd e2e test"
   },
   "devDependencies": {

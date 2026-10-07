@@ -1,6 +1,8 @@
 import { ticketReplySchema, type TicketReplyInput } from '@helpdesk/core/schemas/tickets'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { SparklesIcon } from 'lucide-react'
+import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { Link, useParams } from 'react-router'
 import { Badge } from '@/components/ui/badge'
@@ -29,7 +31,9 @@ import {
   isTicketCategory,
   isTicketStatus,
   MessageDirection,
+  polishReply,
   replyToTicket,
+  summarizeTicket,
   ticketDetailQueryOptions,
   ticketKeys,
   updateTicket,
@@ -189,6 +193,8 @@ function TicketView({ ticket }: { ticket: TicketDetail }) {
               </ol>
             )}
           </section>
+
+          <TicketSummary ticket={ticket} />
 
           <ReplyComposer ticket={ticket} />
         </div>
@@ -467,6 +473,84 @@ function MessageCard({ message }: { message: TicketMessage }) {
 }
 
 /**
+ * A summary of the ticket and everything said on it, on demand.
+ *
+ * **Nothing is stored and nothing is cached.** Every press asks the server for a
+ * fresh summary, which is why this is a `useMutation` rather than a `useQuery` -
+ * a query would hand back a cached answer, and a cached summary is wrong the
+ * moment the next message arrives. An agent reading "waiting on a refund date"
+ * would not notice the refund was paid two replies ago. So the summary lives in
+ * this component's mutation state, is thrown away on navigation, and says so.
+ *
+ * It sits between the thread and the composer because that is the order of the
+ * job: read what happened, or have it read to you, then answer.
+ */
+function TicketSummary({ ticket }: { ticket: TicketDetail }) {
+  const summary = useMutation({ mutationFn: () => summarizeTicket(ticket.id) })
+
+  const error = summary.error
+    ? summary.error instanceof ApiError
+      ? summary.error.message
+      : NETWORK_ERROR
+    : undefined
+
+  // A ticket with no messages has nothing to summarise, and the server refuses
+  // it too - a disabled button is the version of that refusal nobody has to read.
+  // Not reachable through inbound mail, which creates a ticket and its first
+  // message together.
+  const hasMessages = ticket.messages.length > 0
+
+  return (
+    <section aria-label="Summary">
+      <h2 className="mb-4 text-lg font-semibold tracking-tight">Summary</h2>
+
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => summary.mutate()}
+            disabled={summary.isPending || !hasMessages}
+          >
+            <SparklesIcon aria-hidden="true" />
+            {summary.isPending
+              ? 'Summarising…'
+              : summary.data
+                ? 'Regenerate summary'
+                : 'Summarise ticket'}
+          </Button>
+
+          {/* Said out loud, because a summary that looks saved would be trusted
+              later, when the thread has moved on and it is no longer true. */}
+          <p className="text-sm text-muted-foreground">
+            {hasMessages
+              ? 'Written by AI from the conversation. Not saved - each press summarises the thread as it stands.'
+              : 'There is nothing on this ticket to summarise yet.'}
+          </p>
+        </div>
+
+        {/* The previous summary stays on screen while a new one is being
+            written, rather than the section collapsing and the page jumping.
+            `aria-busy` is what says it is going out of date. */}
+        {summary.data && (
+          <Card aria-busy={summary.isPending || undefined}>
+            <CardContent>
+              <p className="whitespace-pre-wrap break-words text-sm">{summary.data}</p>
+            </CardContent>
+          </Card>
+        )}
+
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
+      </div>
+    </section>
+  )
+}
+
+/**
  * The reply composer: one textarea and a button, at the foot of the thread.
  *
  * **It does not send mail.** There is no outbound sender yet, so the reply is
@@ -481,6 +565,14 @@ function MessageCard({ message }: { message: TicketMessage }) {
  * than `useTicketUpdate`'s: a reply is a different request with a different
  * failure, and a refusal belongs under the composer, not in the Details card
  * on the other side of the page.
+ *
+ * **Polish** is a second button and a second mutation, before Add reply because
+ * it comes before it in the job: write, polish, send. It sends the draft to
+ * `POST /api/tickets/:id/polish`, which rewrites it with a model and stores
+ * nothing, and puts the answer back in the textarea. The draft it replaced is
+ * kept in state so Undo can put it back, because a button that silently
+ * overwrites what somebody typed is one an agent only dares press on a draft
+ * they did not care about.
  */
 function ReplyComposer({ ticket }: { ticket: TicketDetail }) {
   const queryClient = useQueryClient()
@@ -489,6 +581,10 @@ function ReplyComposer({ ticket }: { ticket: TicketDetail }) {
     register,
     handleSubmit,
     setError,
+    clearErrors,
+    getValues,
+    setValue,
+    watch,
     reset,
     formState: { errors, isSubmitting },
   } = useForm<TicketReplyInput>({
@@ -503,18 +599,79 @@ function ReplyComposer({ ticket }: { ticket: TicketDetail }) {
     onSuccess: (updated) => storeTicket(queryClient, updated),
   })
 
+  /**
+   * Polishing is its own mutation with no `onSuccess` cache work to do: the
+   * response is text, not a ticket, and nothing on the server changed - so there
+   * is nothing to store and nothing to invalidate. The one request this page
+   * makes that leaves the cache alone.
+   */
+  const polish = useMutation({
+    mutationFn: (input: TicketReplyInput) => polishReply(ticket.id, input),
+  })
+
+  /**
+   * The draft as it stood before the last polish, or `null` when there is
+   * nothing to go back to. Component state rather than a form field: it is not
+   * part of what gets submitted, and it is deliberately forgotten the moment the
+   * reply lands - a stored reply is not something Undo should be able to rewind.
+   */
+  const [draftBeforePolish, setDraftBeforePolish] = useState<string | null>(null)
+
   const onSubmit = handleSubmit(async (values) => {
     try {
       await mutation.mutateAsync(values)
       // Cleared only once the reply is on the ticket. A refusal leaves the
       // text where it is, so nobody loses what they wrote to a failed request.
       reset({ body: '' })
+      setDraftBeforePolish(null)
     } catch (err) {
       // No field of its own to blame - the body was valid enough to send - so
       // every refusal is form-level, the same treatment the dialogs give one.
       setError('root', { message: err instanceof ApiError ? err.message : NETWORK_ERROR })
     }
   })
+
+  /**
+   * Send the draft to be rewritten and put the answer in its place.
+   *
+   * The draft it replaced is remembered only once the request has come back: a
+   * refusal leaves the textarea exactly as it was, with no Undo offered for
+   * something that never happened. Refusals report through `errors.root`, the
+   * same place the submit's do - it is the same textarea, and the same sentence
+   * an agent needs to read.
+   */
+  const onPolish = async () => {
+    const draft = getValues('body')
+    // A previous failure is not news about this attempt.
+    clearErrors('root')
+
+    try {
+      const polished = await polish.mutateAsync({ body: draft })
+      setDraftBeforePolish(draft)
+      // `shouldValidate` because the rewrite is what gets submitted, so it is
+      // the text the schema has to be happy with - not the draft behind it.
+      setValue('body', polished, { shouldDirty: true, shouldValidate: true })
+    } catch (err) {
+      setError('root', { message: err instanceof ApiError ? err.message : NETWORK_ERROR })
+    }
+  }
+
+  /** Put the pre-polish draft back, and stop offering what has been taken. */
+  const undoPolish = () => {
+    if (draftBeforePolish === null) return
+    setValue('body', draftBeforePolish, { shouldDirty: true, shouldValidate: true })
+    setDraftBeforePolish(null)
+  }
+
+  // One flag for both requests: either in flight disables the textarea and both
+  // buttons, so a reply cannot be added out from under a rewrite that is about to
+  // replace it, and a rewrite cannot be asked for twice at once.
+  const busy = isSubmitting || polish.isPending
+
+  // Nothing to polish is a disabled button rather than a validation message:
+  // there is no mistake to report, and asking a model to improve an empty draft
+  // would be inviting it to write the reply itself.
+  const hasDraft = watch('body').trim().length > 0
 
   return (
     <section aria-label="Reply">
@@ -535,12 +692,32 @@ function ReplyComposer({ ticket }: { ticket: TicketDetail }) {
               <Textarea
                 id="ticket-reply"
                 rows={6}
-                disabled={isSubmitting}
+                disabled={busy}
                 aria-invalid={errors.body ? true : undefined}
                 {...register('body')}
               />
               <FieldError errors={[errors.body]} />
             </Field>
+
+            {/* Only after a polish, and gone again the moment the draft is put
+                back or the reply is added. It says what happened and that the
+                result still needs reading - the model rewrote the wording, it
+                did not check the answer. */}
+            {draftBeforePolish !== null && (
+              <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+                <span>Rewritten from your draft. Read it before adding.</span>
+                <Button
+                  type="button"
+                  variant="link"
+                  size="sm"
+                  className="h-auto px-0"
+                  onClick={undoPolish}
+                  disabled={busy}
+                >
+                  Undo polish
+                </Button>
+              </div>
+            )}
 
             {/* Rendered only when there is something to say, the way the rest
                 of this page reports a refusal - an empty live region sitting
@@ -557,9 +734,24 @@ function ReplyComposer({ ticket }: { ticket: TicketDetail }) {
             <p className="text-sm text-muted-foreground">
               Saved on the ticket. Nothing is emailed to {ticket.requesterName} yet.
             </p>
-            <Button type="submit" disabled={isSubmitting}>
-              {isSubmitting ? 'Adding…' : 'Add reply'}
-            </Button>
+            {/* Polish first, because it comes first in the job: write it,
+                improve it, add it. `outline` rather than the default, so the
+                button that actually puts the reply on the ticket stays the one
+                the eye lands on. */}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void onPolish()}
+                disabled={busy || !hasDraft}
+              >
+                <SparklesIcon aria-hidden="true" />
+                {polish.isPending ? 'Polishing…' : 'Polish'}
+              </Button>
+              <Button type="submit" disabled={busy}>
+                {isSubmitting ? 'Adding…' : 'Add reply'}
+              </Button>
+            </div>
           </CardFooter>
         </form>
       </Card>
@@ -587,9 +779,10 @@ function TicketSkeleton() {
             {Array.from({ length: 2 }, (_, i) => (
               <Skeleton key={i} className="h-32 w-full rounded-xl" />
             ))}
-            {/* The composer's own block: it is part of the page's shape, so
-                leaving it out would make the thread grow downwards when the
-                response lands. */}
+            {/* The summary control and the composer are both part of the
+                page's shape, so leaving them out would make the thread grow
+                downwards when the response lands. */}
+            <Skeleton className="mt-4 h-9 w-48 rounded-lg" />
             <Skeleton className="mt-4 h-44 w-full rounded-xl" />
           </div>
           <Skeleton className="h-80 w-full rounded-xl" />

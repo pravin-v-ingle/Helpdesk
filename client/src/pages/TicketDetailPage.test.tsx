@@ -96,24 +96,52 @@ const dana: Assignee = {
   role: Role.ADMIN,
 }
 
+/** What the polish endpoint answers with unless a test says otherwise. */
+const POLISHED = 'Thank you for getting in touch. I have fixed your enrolment.'
+
 /**
- * Answers both endpoints the page uses, by path and method - the detail GET,
- * the assignee list, and the assignment PATCH, which echoes the ticket back
- * with the new assignee the way the server does.
+ * What the summary endpoint answers with unless a test says otherwise. One line,
+ * because `getByText` normalises whitespace - a newline in the fixture would never
+ * match the rendered text however correctly the page displayed it.
+ */
+const SUMMARY = 'Ada cannot see her enrolment. Nothing has been done yet.'
+
+/**
+ * Answers every endpoint the page uses, by path and method - the detail GET, the
+ * assignee list, the assignment PATCH, which echoes the ticket back with the new
+ * assignee the way the server does, and the two POSTs.
+ *
+ * The three POSTs are told apart by path rather than method: the reply, the
+ * polish and the summary are all posts to a path under the ticket, and only the
+ * reply answers with a ticket.
+ *
+ * `summaries` is a queue rather than one string, because the summary endpoint is
+ * the one thing here that is asked the same question twice and must answer afresh
+ * - the last entry repeats once the queue runs out.
  */
 function mockApi({
   ticket = detail(),
   assignees = [bob, dana],
   patchFails,
   replyFails,
+  polished = POLISHED,
+  polishFails,
+  summaries = [SUMMARY],
+  summaryFails,
   assigneesFail,
 }: {
   ticket?: TicketDetail
   assignees?: Assignee[]
   patchFails?: Error
   replyFails?: Error
+  polished?: string
+  polishFails?: Error
+  summaries?: string[]
+  summaryFails?: Error
   assigneesFail?: Error
 } = {}) {
+  let summaryCalls = 0
+
   mockedApiFetch.mockImplementation(async (path, options) => {
     if (path === '/api/assignees') {
       if (assigneesFail) throw assigneesFail
@@ -122,6 +150,17 @@ function mockApi({
     if (options?.method === 'PATCH') {
       if (patchFails) throw patchFails
       return { ticket: applyPatch(ticket, options.body as TicketPatch, assignees) }
+    }
+    if (typeof path === 'string' && path.endsWith('/polish')) {
+      if (polishFails) throw polishFails
+      // Text, not a ticket: nothing was stored, so there is nothing to echo.
+      return { body: polished }
+    }
+    if (typeof path === 'string' && path.endsWith('/summary')) {
+      if (summaryFails) throw summaryFails
+      const summary = summaries[Math.min(summaryCalls, summaries.length - 1)]
+      summaryCalls += 1
+      return { summary }
     }
     if (options?.method === 'POST') {
       if (replyFails) throw replyFails
@@ -152,6 +191,10 @@ function withReply(ticket: TicketDetail, body: string): TicketDetail {
 
 const composer = () => screen.getByRole('textbox', { name: 'Your reply' })
 const addReply = () => screen.getByRole('button', { name: 'Add reply' })
+const polishButton = () => screen.getByRole('button', { name: 'Polish' })
+const summarise = () => screen.getByRole('button', { name: 'Summarise ticket' })
+const regenerate = () => screen.queryByRole('button', { name: 'Regenerate summary' })
+const undoPolish = () => screen.queryByRole('button', { name: 'Undo polish' })
 
 /**
  * What the server does with a patch, so the fake answers the way the real
@@ -675,6 +718,285 @@ describe('TicketDetailPage', () => {
 
     expect(
       screen.getByText('Saved on the ticket. Nothing is emailed to Ada Lovelace yet.'),
+    ).toBeInTheDocument()
+  })
+
+  /**
+   * Polish sends the draft to be rewritten and puts the answer in its place.
+   * Nothing is stored by it, which is what the thread and the message count
+   * standing still are here to pin: the only thing that changed is the textarea.
+   */
+  it('polishes the draft and puts the rewrite in the composer', async () => {
+    mockApi()
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await user.type(composer(), 'fixed ur enrolment')
+    await user.click(polishButton())
+
+    await waitFor(() =>
+      expect(mockedApiFetch).toHaveBeenCalledWith('/api/tickets/7/polish', {
+        method: 'POST',
+        body: { body: 'fixed ur enrolment' },
+      }),
+    )
+
+    await waitFor(() => expect(composer()).toHaveValue(POLISHED))
+
+    // A rewrite is not a reply: nothing was added to the thread, the count is
+    // where it was, and no second request went out to fetch the ticket again.
+    expect(page.messages()).toHaveLength(2)
+    expect(screen.getByRole('heading', { level: 2, name: 'Messages (2)' })).toBeInTheDocument()
+    expect(requestedPaths().filter((path) => path === '/api/tickets/7')).toHaveLength(1)
+
+    // And it says what it did, because the text in the box is no longer what
+    // the agent wrote.
+    expect(screen.getByText('Rewritten from your draft. Read it before adding.')).toBeInTheDocument()
+  })
+
+  /**
+   * There is nothing to improve about an empty draft, and asking anyway would
+   * be inviting the model to write the reply itself - so the button is disabled
+   * rather than refusing with a message.
+   */
+  it('offers nothing to polish until something is typed', async () => {
+    mockApi()
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    expect(polishButton()).toBeDisabled()
+
+    await user.type(composer(), 'Something to improve.')
+    expect(polishButton()).toBeEnabled()
+
+    // Whitespace is the empty draft it really is, the same view the shared
+    // schema takes of it.
+    await user.clear(composer())
+    await user.type(composer(), '   ')
+    expect(polishButton()).toBeDisabled()
+
+    expect(requestedPaths()).not.toContain('/api/tickets/7/polish')
+  })
+
+  it('puts the draft back when the polish is undone', async () => {
+    mockApi()
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await user.type(composer(), 'my own words')
+    await user.click(polishButton())
+    await waitFor(() => expect(composer()).toHaveValue(POLISHED))
+
+    await user.click(undoPolish()!)
+
+    expect(composer()).toHaveValue('my own words')
+    // Nothing left to undo, so nothing offers to.
+    expect(undoPolish()).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('Rewritten from your draft. Read it before adding.'),
+    ).not.toBeInTheDocument()
+  })
+
+  /**
+   * The rewrite is what gets submitted - not the draft behind it. Worth pinning
+   * because the form holds both, and sending the wrong one would be invisible
+   * until a student read it.
+   */
+  it('adds the polished reply rather than the draft it replaced', async () => {
+    mockApi()
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await user.type(composer(), 'fixed ur enrolment')
+    await user.click(polishButton())
+    await waitFor(() => expect(composer()).toHaveValue(POLISHED))
+
+    await user.click(addReply())
+
+    await waitFor(() =>
+      expect(mockedApiFetch).toHaveBeenCalledWith('/api/tickets/7/messages', {
+        method: 'POST',
+        body: { body: POLISHED },
+      }),
+    )
+
+    const messages = await waitFor(() => {
+      const list = page.messages()
+      expect(list).toHaveLength(3)
+      return list
+    })
+    expect(within(messages[2]!).getByText(POLISHED)).toBeInTheDocument()
+
+    // The composer is empty again, and there is no draft left to go back to.
+    expect(composer()).toHaveValue('')
+    expect(undoPolish()).not.toBeInTheDocument()
+  })
+
+  /**
+   * A server with no API key answers 503 with a sentence written for the agent
+   * reading it, and the draft they wrote is still there.
+   */
+  it('keeps the draft when the server refuses to polish it', async () => {
+    mockApi({
+      polishFails: new ApiError(503, 'Reply polishing is not configured on this server.'),
+    })
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await user.type(composer(), 'A draft nobody will improve.')
+    await user.click(polishButton())
+
+    expect(
+      await screen.findByText('Reply polishing is not configured on this server.'),
+    ).toBeInTheDocument()
+    expect(composer()).toHaveValue('A draft nobody will improve.')
+    // Nothing was replaced, so nothing offers to put anything back.
+    expect(undoPolish()).not.toBeInTheDocument()
+    expect(page.messages()).toHaveLength(2)
+  })
+
+  it('shows a generic message when the polish never reaches the server', async () => {
+    mockApi({ polishFails: new Error('Network Error') })
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await user.type(composer(), 'Hello.')
+    await user.click(polishButton())
+
+    expect(
+      await screen.findByText('Could not reach the server. Please try again.'),
+    ).toBeInTheDocument()
+    expect(composer()).toHaveValue('Hello.')
+  })
+
+  /**
+   * The summary is asked for, never arrived at: nothing is requested on load, so
+   * a ticket nobody wants summarised costs nothing.
+   */
+  it('does not summarise until asked', async () => {
+    mockApi()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    expect(summarise()).toBeEnabled()
+    expect(requestedPaths()).not.toContain('/api/tickets/7/summary')
+    expect(screen.queryByText(SUMMARY)).not.toBeInTheDocument()
+  })
+
+  it('summarises the ticket and shows the result', async () => {
+    mockApi()
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await user.click(summarise())
+
+    await waitFor(() =>
+      // No body: the ticket in the path is the whole input.
+      expect(mockedApiFetch).toHaveBeenCalledWith('/api/tickets/7/summary', { method: 'POST' }),
+    )
+
+    expect(await screen.findByText(SUMMARY)).toBeInTheDocument()
+    // A summary is not a message, so the thread and its count stand still.
+    expect(page.messages()).toHaveLength(2)
+    expect(screen.getByRole('heading', { level: 2, name: 'Messages (2)' })).toBeInTheDocument()
+  })
+
+  /**
+   * Nothing is stored and nothing is cached, so pressing again asks again - which
+   * is the point: a summary kept from the last press would be a claim about a
+   * thread that has since moved on.
+   */
+  it('regenerates a fresh summary on every press', async () => {
+    const second = 'The refund was paid. Nothing is outstanding.'
+    mockApi({ summaries: [SUMMARY, second] })
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await user.click(summarise())
+    expect(await screen.findByText(SUMMARY)).toBeInTheDocument()
+
+    // The button now says what a second press does.
+    const again = await waitFor(() => {
+      const button = regenerate()
+      expect(button).toBeInTheDocument()
+      return button!
+    })
+
+    await user.click(again)
+
+    expect(await screen.findByText(second)).toBeInTheDocument()
+    expect(screen.queryByText(SUMMARY)).not.toBeInTheDocument()
+    expect(requestedPaths().filter((path) => path === '/api/tickets/7/summary')).toHaveLength(2)
+  })
+
+  /**
+   * A model handed an empty conversation would invent one, so the button is
+   * disabled rather than refusing after the fact - the same treatment Polish
+   * gives an empty draft.
+   */
+  it('offers nothing to summarise on a ticket with no messages', async () => {
+    mockApi({ ticket: detail({ messages: [] }) })
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    expect(summarise()).toBeDisabled()
+    expect(
+      screen.getByText('There is nothing on this ticket to summarise yet.'),
+    ).toBeInTheDocument()
+    expect(requestedPaths()).not.toContain('/api/tickets/7/summary')
+  })
+
+  it("shows the server's message when the summary is refused", async () => {
+    mockApi({
+      summaryFails: new ApiError(503, 'AI features are not configured on this server.'),
+    })
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await user.click(summarise())
+
+    expect(
+      await screen.findByText('AI features are not configured on this server.'),
+    ).toBeInTheDocument()
+    // Nothing was produced, so the button still offers the first summary.
+    expect(regenerate()).not.toBeInTheDocument()
+  })
+
+  it('shows a generic message when the summary never reaches the server', async () => {
+    mockApi({ summaryFails: new Error('Network Error') })
+    const user = userEvent.setup()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    await user.click(summarise())
+
+    expect(
+      await screen.findByText('Could not reach the server. Please try again.'),
+    ).toBeInTheDocument()
+  })
+
+  /**
+   * Said on screen, because a summary that looked saved would be trusted later,
+   * when the thread has moved on and it is no longer true.
+   */
+  it('says that the summary is written by AI and not saved', async () => {
+    mockApi()
+    const page = renderPage()
+    await page.heading('Cannot see my enrolment')
+
+    expect(
+      screen.getByText(
+        'Written by AI from the conversation. Not saved - each press summarises the thread as it stands.',
+      ),
     ).toBeInTheDocument()
   })
 })

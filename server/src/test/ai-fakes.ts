@@ -1,0 +1,220 @@
+/**
+ * The boundaries the AI features' tests replace, and the fixtures they share.
+ *
+ * Both features - the reply polisher and the ticket summariser - go through the
+ * same two edges, the ticket read and the model, so one module serves both.
+ *
+ * **Why one module rather than a few lines in each test file.** `mock.module` is
+ * process-global and `bun test` runs every file in one process with one module
+ * registry, so whichever test file happens to load a module first is the one
+ * whose fakes it binds to - and Bun has no per-file isolation flag. Two files
+ * each registering their own fake for the same module is therefore a test that
+ * passes alone and fails in the suite, which is exactly what happened before
+ * this module existed. Registering every fake here, once, and importing this
+ * module **first** from each test file removes the race: the order below is the
+ * only order there is.
+ *
+ * It also means the two orderings that matter are stated in one place:
+ *
+ * 1. `env.ts` is replaced before anything reads it, so `lib/ai.ts` can be asked
+ *    about a configured key and an unconfigured one in the same run.
+ * 2. The real `openAiModel` is captured before `lib/ai.ts` is replaced, so
+ *    `ai.test.ts` can test the real thing while everything downstream gets the
+ *    fake.
+ *
+ * Nothing here is reset automatically - call `resetFakes()` in a `beforeEach`.
+ * These tests must stay serial: `bun test --concurrent` would let two files
+ * drive the same fakes at once.
+ */
+import "./env-defaults.ts";
+
+import type {
+  LanguageModelV4CallOptions,
+  LanguageModelV4GenerateResult,
+} from "@ai-sdk/provider";
+import { MockLanguageModelV4 } from "ai/test";
+import { mock } from "bun:test";
+import type { RequestHandler } from "express";
+import { MessageDirection, TicketStatus } from "../generated/prisma/enums.ts";
+import type { PublicMessage, PublicTicketDetail } from "../services/tickets.ts";
+
+// --- 1. the environment, made movable ---------------------------------------
+
+const realEnvModule = await import("../env.ts");
+
+/**
+ * The `env.openai` section, mutable so a test can say whether this server has a
+ * key. Everything else about `env` keeps its real value - the fake is a spread of
+ * the real module - so nothing that happens to read `env` is disturbed by the
+ * substitution.
+ */
+export const openaiEnv = {
+  apiKey: undefined as string | undefined,
+  model: "gpt-5-nano",
+};
+
+mock.module("../env.ts", () => ({
+  ...realEnvModule,
+  env: { ...realEnvModule.env, openai: openaiEnv },
+}));
+
+// --- 2. the real wrapper, before it is replaced ------------------------------
+
+/**
+ * `lib/ai.ts`'s own export, captured while the registry still holds the real
+ * module. `ai.test.ts` tests this; everything else gets the fake registered
+ * below.
+ */
+export const realOpenAiModel = (await import("../lib/ai.ts")).openAiModel;
+
+// --- 3. the model ------------------------------------------------------------
+
+/** One recorded call to a model, as the SDK types it. */
+export type ModelCall = LanguageModelV4CallOptions;
+
+/**
+ * A model that answers with `text` and records the call it was given.
+ *
+ * The return type is annotated rather than inferred on purpose. Bun does not
+ * typecheck a test run, so a fake that has drifted from the provider interface
+ * would otherwise pass here and only be caught - confusingly - the next time
+ * `generateText` was given a real model. Saying the type out loud makes the
+ * drift a compile error in this file, where it belongs. `@ai-sdk/provider` is a
+ * declared devDependency for this reason: it is a transitive package of `ai`,
+ * and Bun's isolated `node_modules` does not make those resolvable (see
+ * CLAUDE.md), so the types it defines are unusable until we ask for it.
+ */
+export function answering(text: string) {
+  return new MockLanguageModelV4({
+    modelId: "gpt-5-nano",
+    doGenerate: async (): Promise<LanguageModelV4GenerateResult> => ({
+      content: [{ type: "text", text }],
+      // An object, not the string it was in earlier versions of the spec: a
+      // provider's own wording is kept beside the unified reason.
+      finishReason: { unified: "stop", raw: undefined },
+      // Nothing under test reads these; they are here because the interface
+      // requires them, and the breakdown is per-kind in v4 rather than a flat
+      // count.
+      usage: {
+        inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: 50, text: 50, reasoning: 0 },
+      },
+      warnings: [],
+    }),
+  });
+}
+
+/** A model whose call rejects, standing in for any provider failure. */
+export function failing(error: unknown) {
+  return new MockLanguageModelV4({
+    modelId: "gpt-5-nano",
+    doGenerate: async () => {
+      throw error;
+    },
+  });
+}
+
+export const DEFAULT_POLISHED = "Thank you for getting in touch. I have fixed your enrolment.";
+
+export const DEFAULT_SUMMARY =
+  "Ada cannot see her enrolment. Nothing has been done yet. Someone needs to check her record.";
+
+/**
+ * What `openAiModel()` hands back, or throws. The AI SDK's own mock model,
+ * so `generateText` runs for real and a test can assert against the call it
+ * actually built rather than against a stubbed-out `generateText`, which would
+ * pin nothing.
+ */
+export const modelUse = {
+  model: answering(DEFAULT_POLISHED),
+  error: undefined as unknown,
+};
+
+export const openAiModel = mock(() => {
+  if (modelUse.error) throw modelUse.error;
+  return modelUse.model;
+});
+
+mock.module("../lib/ai.ts", () => ({ openAiModel }));
+
+// --- 4. the ticket read ------------------------------------------------------
+
+export function message(overrides: Partial<PublicMessage> = {}): PublicMessage {
+  return {
+    id: 10,
+    direction: MessageDirection.INBOUND,
+    fromEmail: "ada@example.com",
+    fromName: "Ada Lovelace",
+    body: "I cannot see my enrolment.",
+    createdAt: new Date("2026-09-28T09:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+export function detail(overrides: Partial<PublicTicketDetail> = {}): PublicTicketDetail {
+  const messages = overrides.messages ?? [message()];
+  return {
+    id: 7,
+    subject: "Cannot see my enrolment",
+    status: TicketStatus.OPEN,
+    category: null,
+    requesterEmail: "ada@example.com",
+    requesterName: "Ada Lovelace",
+    lastMessageAt: new Date("2026-09-28T09:00:00.000Z"),
+    createdAt: new Date("2026-09-28T09:00:00.000Z"),
+    updatedAt: new Date("2026-09-28T09:00:00.000Z"),
+    assignedTo: null,
+    ...overrides,
+    messages,
+    messageCount: messages.length,
+  };
+}
+
+/** What `getTicket` answers with, or throws. */
+export const ticketRead = {
+  ticket: detail(),
+  error: undefined as unknown,
+};
+
+export const getTicket = mock(async (_id: number): Promise<PublicTicketDetail> => {
+  if (ticketRead.error) throw ticketRead.error;
+  return ticketRead.ticket;
+});
+
+/**
+ * The whole tickets service, because `routes/tickets.ts` imports all of it and
+ * the real module would pull Prisma into the process. The three stubs belong to
+ * handlers these tests do not exercise.
+ */
+mock.module("../services/tickets.ts", () => ({
+  getTicket,
+  listTickets: mock(),
+  updateTicket: mock(),
+  addReply: mock(),
+}));
+
+// --- 5. the session ----------------------------------------------------------
+
+/**
+ * A pass-through. The polish handler reads nothing off the session - no message
+ * is written, so there is no author to record - so being let past is the whole of
+ * what `requireAuth` contributes to these tests. Whether it is actually *mounted*
+ * is a question for a request with a real session, which these are not.
+ */
+const requireAuth: RequestHandler = (_req, _res, next) => next();
+mock.module("../middleware/require-auth.ts", () => ({ requireAuth }));
+
+// --- resetting ---------------------------------------------------------------
+
+export function resetFakes() {
+  openaiEnv.apiKey = undefined;
+  openaiEnv.model = "gpt-5-nano";
+
+  modelUse.model = answering(DEFAULT_POLISHED);
+  modelUse.error = undefined;
+  openAiModel.mockClear();
+
+  ticketRead.ticket = detail();
+  ticketRead.error = undefined;
+  getTicket.mockClear();
+}

@@ -268,3 +268,41 @@ export async function replyToTicket(id: number, input: TicketReplyInput): Promis
   })
   return ticket
 }
+
+/**
+ * Rewrite a draft reply and get the text back - nothing is stored, and nothing
+ * on the ticket changes, so unlike every other write here there is no ticket in
+ * the response and no cache to update. The caller puts the result in the
+ * textarea the draft came out of.
+ *
+ * A `POST` despite reading nothing, because it sends a body and is not
+ * idempotent in any useful sense: ask twice and get two different rewrites.
+ *
+ * Same `ticketReplySchema` body as `replyToTicket`, which is the point - a draft
+ * has to be a usable reply before it is worth polishing, so the composer can
+ * validate once for both.
+ */
+export async function polishReply(id: number, input: TicketReplyInput): Promise<string> {
+  const { body } = await apiFetch<{ body: string }>(`/api/tickets/${id}/polish`, {
+    method: 'POST',
+    body: input,
+  })
+  return body
+}
+
+/**
+ * Summarise the ticket and the conversation on it. Returns the text; nothing is
+ * stored on either side, so there is no cache to update and no key to invalidate
+ * - and the server generates a new summary on every call rather than handing back
+ * one it kept. Press it twice and the second answer is about the thread as it
+ * stands, which is the whole reason none is saved.
+ *
+ * A `POST` with no body, which looks odd next to a `GET` and is deliberate: this
+ * costs money per call and must never come from a cache.
+ */
+export async function summarizeTicket(id: number): Promise<string> {
+  const { summary } = await apiFetch<{ summary: string }>(`/api/tickets/${id}/summary`, {
+    method: 'POST',
+  })
+  return summary
+}
