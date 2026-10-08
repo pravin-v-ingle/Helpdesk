@@ -44,12 +44,14 @@ has no build or transpile step.
   client generated to `server/src/generated/prisma`)
 - Auth: Better Auth, email and password, database-backed sessions
 - AI: Claude API via `@anthropic-ai/sdk`, default model `claude-opus-5` (not yet
-  added). **Two exceptions are already built**: the reply polisher and the ticket
-  summariser both call OpenAI `gpt-5-nano` through the Vercel AI SDK (`ai` +
-  `@ai-sdk/openai`), the only non-Anthropic calls in the system - see Polishing a
-  draft reply and Summarising a ticket below, and `tech-stack.md` for why the
-  deviation stands. One `OPENAI_MODEL` serves both, and `OPENAI_API_KEY` is the
-  one optional secret in `env.ts`.
+  added). **Everything actually built goes to OpenAI `gpt-5-nano` through the
+  Vercel AI SDK** (`ai` + `@ai-sdk/openai`): the reply polisher, the ticket
+  summariser, and the automatic classifier that categorises a new ticket as it
+  arrives - see Polishing a draft reply, Summarising a ticket and Classifying a
+  ticket automatically below, and `tech-stack.md` for why the deviation stands.
+  One `OPENAI_MODEL` serves all three, and `OPENAI_API_KEY` is the one optional
+  secret in `env.ts` - **unset has to keep working**, which is how the e2e stack
+  runs.
 - Email: provider-agnostic inbound, one adapter per provider (`server/src/lib/email/`),
   chosen by `INBOUND_EMAIL_PROVIDER`; Mailgun is the default because SendGrid
   Inbound Parse has no signature mechanism. Outbound send not yet added.
@@ -1038,6 +1040,86 @@ is a disabled button with a note rather than a refusal after the fact, the same
 treatment Polish gives an empty draft; the previous summary stays on screen under
 `aria-busy` while a new one is written, rather than the section collapsing.
 
+### Classifying a ticket automatically
+
+A new ticket is categorised by a model as it arrives. No endpoint, no button and
+nothing for an agent to trigger: `services/classify-ticket.ts` is called from the
+inbound path and that is the whole interface. Tasks 5.3, 5.4, 5.5 and 5.9.
+
+**It is non-blocking, and that is the shape of the feature.** `convert()` in
+`services/inbound-email.ts` finishes its serializable transaction, then calls
+`void classifyTicket(ticketId)` and returns. The webhook has answered the provider
+before a model is asked anything - measured at about 1.2s round trip including
+Bun's own start-up, where the model takes a second or two more on its own. Three
+properties follow and all three are load-bearing:
+
+1. **`classifyTicket` never throws.** Nobody holds the promise, so a rejection
+   would be unhandled and could take the process down over a category. Every
+   failure is logged and swallowed and the function returns `null`. This is why a
+   bare `void` at the call site is safe, and the reason most of
+   `classify-ticket.test.ts` is failure cases asserting a `null` rather than a
+   throw.
+2. **A failed classification cannot cost a ticket** (task 5.9). The ticket, its
+   message and the `RawEmail` row are committed before this starts, so there is
+   nothing to roll back and nothing for the provider to retry.
+3. **`Ticket.category IS NULL` is the seam**, exactly as `RawEmail.processedAt IS
+   NULL` is for conversion. Nothing retries today: a ticket that failed to
+   classify stays uncategorised until an agent sets it, and a backfill or a real
+   worker (4.2/4.5) would claim rows by that predicate.
+
+Four decisions worth knowing:
+
+- **The write is conditional**, and it is the important line in the file:
+  `updateMany({ where: { id, category: null }, data: { category } })`. Because this
+  runs unawaited, an agent can open a brand-new ticket and classify it inside the
+  second the model takes - and a human's answer must never be overwritten by a
+  machine's. An `update` by id would have clobbered them. A `count` of 0 is logged
+  and accepted. The category is also re-read before the call and the model is
+  skipped entirely if it is already set, so the common case costs nothing.
+- **Only a new ticket, only once.** A reply arriving on an existing thread does not
+  re-classify it. The category is what the ticket is *about*, settled by the
+  opening message; re-running on every message would overwrite an agent's
+  correction with a guess at a follow-up that says "thanks, any update?". Verified:
+  a technical-sounding reply to a `REFUND_REQUEST` ticket leaves it
+  `REFUND_REQUEST`.
+- **`Output.choice` from the AI SDK, not parsing.** The options come from
+  `CATEGORY_GUIDE`, a `Record<TicketCategory, string>` of category → definition, so
+  adding a fourth category is a compile error until it has a definition, and the
+  list the model may answer from cannot drift from the list it is told about. The
+  SDK turns that into a JSON schema whose `enum` is the three categories, so an
+  invalid category is not something the provider can return (task 5.3). An off-list
+  answer throws inside the SDK and is swallowed like any other failure - the ticket
+  keeps no category rather than an invented one. Note the wire shape if you ever
+  fake it: `Output.choice` expects `{"result":"<option>"}`, not a bare string.
+- **There is no fourth "unsure" option.** `project-scope.md` says every ticket
+  belongs to a single category, so doubt goes to `GENERAL_QUESTION`, which is the
+  catch-all by construction; the instructions say so explicitly, along with the
+  rule that an angry technical complaint is still technical unless money is asked
+  for. An agent correcting it on the detail page is the other half of what the
+  scope promises.
+
+Sent: the subject and the opening message only (`Ticket.body`, truncated to 4,000
+characters) - a classification turns on the first paragraph and the rest is
+signature and quoted mail. `store: false`, `reasoningEffort: 'low'`,
+`textVerbosity: 'low'`, and a **20s** timeout rather than the interactive features'
+30s: nobody is watching, so a slow provider should cost a category rather than hold
+a connection open into the next delivery. No `LlmCall` audit row (5.2) and no
+prompt caching (5.8) - neither exists for the other two features either.
+
+**The client shows nothing new**, deliberately: the category already appears on the
+queue and in the detail page's editable `CategorySelect`, which is all task 5.10
+asks for bar the "AI-assigned" marking - and nothing records *who* set a category,
+so that marking would be a claim the database cannot support. A page open at the
+moment a ticket arrives will not see the category appear; nobody is watching a
+ticket at the instant it is created.
+
+**AI is off in the e2e stack on purpose.** `server/.env.test` sets
+`OPENAI_API_KEY=` empty rather than leaving it out, because Bun layers `.env.test`
+over `server/.env` and a developer's real key would otherwise still be in the
+environment - every inbound-email spec would make a live classification call, and
+the ticket specs expect `category: null`. Empty means the classifier logs a 503 and
+leaves the category alone.
+
 `GET /api/assignees` (`routes/assignees.ts`) is the list of people a ticket can
 go to: active accounts only, `{ id, name, email, role }`, by name, unpaginated.
 It is `requireAuth` with no role check, which is the whole reason it exists -
@@ -1221,7 +1303,7 @@ into a status and a sentence. Nothing in `server/` reaches Postgres or a provide
 from a unit test. Anything that needs the real database, a real session or a real
 model stays in `e2e/` or stays verified by hand.
 
-**Four rules, all of which the polish tests exist to demonstrate:**
+**Five rules, all of which the AI features' tests exist to demonstrate:**
 
 1. **`mock.module` is process-global and `bun test` has no per-file isolation.**
    Every file runs in one process with one module registry, so whichever test
@@ -1235,18 +1317,27 @@ model stays in `e2e/` or stays verified by hand.
    import and later writes to it are invisible - and give it a `resetFakes()` for
    `beforeEach`. Do not pass `--concurrent`: two files driving one set of fakes at
    once would be the same bug again.
-2. **Import `src/test/env-defaults.ts` first** (the fakes module already does).
+2. **Import the module under test with `await import`, not a static import.**
+   `mock.module` is **not hoisted** in Bun, and the fakes module uses top-level
+   `await`, so a static `import { thing } from './thing.ts'` can be evaluated
+   before the fakes have finished registering - which binds the real module. The
+   symptom is nasty: `classify-ticket.test.ts` bound the real Prisma client and
+   silently talked to the developer's own database, where the ticket it asked
+   about happened to be classified already, so every test failed with no error
+   and nothing logged. A plain constant with no dependencies is safe to import
+   statically; the function under test is not.
+3. **Import `src/test/env-defaults.ts` first** (the fakes module already does).
    `env.ts` validates at import time and calls `process.exit(1)` on a missing
    variable, which in a test run kills the process with no failing test to explain
    it - and almost everything reaches `env.ts` through
    `middleware/error-handler.ts`. The defaults fill only what is absent, so a real
    `server/.env` still wins, and nothing is ever connected to.
-3. **Replace the boundary, not the library.** The model is the AI SDK's own
+4. **Replace the boundary, not the library.** The model is the AI SDK's own
    `MockLanguageModelV4` from `ai/test`, so `generateText` runs for real and the
    assertions are made against the call the service actually built. A stubbed
    `generateText` would pin nothing. The same instinct as the client's "mock only
    `apiFetch`".
-4. **Annotate a fake's return type**, because `bun test` does not typecheck: an
+5. **Annotate a fake's return type**, because `bun test` does not typecheck: an
    un-annotated fake that has drifted from the interface passes the suite and
    surfaces later as a confusing failure somewhere else. This is also why
    `@ai-sdk/provider` is a declared devDependency - it is a transitive package of
@@ -1328,10 +1419,16 @@ appends an agent's reply - stored on the ticket, emailed nowhere - with `GET
 /api/assignees` listing who a ticket can go to; all signed-in, none
 admin-only. `POST /api/tickets/:id/polish` rewrites a draft reply and `POST
 /api/tickets/:id/summary` summarises the ticket and its thread, both with OpenAI
-`gpt-5-nano` through the Vercel AI SDK and both storing nothing - the only
-non-Anthropic calls in the system, and the only things that work off an optional
-secret (`OPENAI_API_KEY`; without it, a 503 the page shows). `bun run email:test` exercises the whole inbound path locally
-without a provider account. See Tickets and inbound email above for the webhook's
+`gpt-5-nano` through the Vercel AI SDK and both storing nothing. **A new ticket is
+also classified automatically**, by `services/classify-ticket.ts` fired unawaited
+from the inbound path after its transaction commits - the only AI that writes to
+the database and the only one nobody triggers. All three work off the one optional
+secret (`OPENAI_API_KEY`; without it they log or answer 503 and the system
+otherwise behaves exactly as before). `bun run email:test` exercises the whole inbound path locally
+without a provider account - including the classifier, which is how it was
+verified: a refund-flavoured mail became a `REFUND_REQUEST` ticket and a broken-
+video one a `TECHNICAL_QUESTION`, each a second or two after the webhook had
+already answered 200. See Tickets and inbound email above for the webhook's
 position above `express.json()`, the dedupe key, the two-phase write and the
 threading rules.
 
@@ -1471,17 +1568,18 @@ detail page (`UsersPage.test.tsx`, `TicketsPage.test.tsx`,
 of the page's POSTs are posts to a path under the ticket, and only the polish
 answers with text instead of a ticket).
 
-The two AI features are also the only things in `server/` with unit tests, under
-`bun test`: `services/polish-reply.test.ts` and `services/summarize-ticket.test.ts`
-for the prompts, the provider options and the guards,
-`routes/tickets.polish.test.ts` and `routes/tickets.summary.test.ts` for the HTTP
-contracts through a real Express app, and `lib/ai.test.ts` for the configured and
-unconfigured key. `src/test/ai-fakes.ts` owns every fake they share and
-`src/test/env-defaults.ts` keeps them off a developer's `.env`; see Testing →
-Server unit tests, which is also where the `mock.module` rule that shape exists
-for is written down. **No test anywhere reaches a real model.** Both endpoints have
-been exercised against a running API with a real key - a summary came back
-correctly from a live `gpt-5-nano` call - and their 401, 404 and 503 paths too.
+The three AI features are also the only things in `server/` with unit tests, under
+`bun test`: `services/polish-reply.test.ts`, `services/summarize-ticket.test.ts`
+and `services/classify-ticket.test.ts` for the prompts, the provider options and
+the guards, `routes/tickets.polish.test.ts` and `routes/tickets.summary.test.ts`
+for the HTTP contracts through a real Express app, and `lib/ai.test.ts` for the
+configured and unconfigured key. `src/test/ai-fakes.ts` owns every fake they share
+and `src/test/env-defaults.ts` keeps them off a developer's `.env`; see Testing →
+Server unit tests, which is also where the `mock.module` rules that shape exists
+for are written down. **No test anywhere reaches a real model**, but all three
+features have been exercised against a running API with a real key: a live summary,
+a live polish, and two inbound emails that classified correctly as `REFUND_REQUEST`
+and `TECHNICAL_QUESTION` with a reply to the first leaving its category alone.
 
 Not built yet, in this feature's area: an agent's reply is stored on the ticket
 but never sent, so a student still hears nothing back; no record of who changed
@@ -1490,10 +1588,15 @@ action that names its author, through the message's own `fromName`; no job queue
 NULL` is the seam a worker slots into (4.2, 4.5); no provider account or real
 inbound route (4.1); attachment metadata is stored but the bytes are dropped; no
 rate limit on the webhook (8.3) and none on the two AI endpoints either, which
-are the only routes here that cost money per call; nothing outbound at all, so no
-student ever receives a reply (4.12-4.15); and no AI on a ticket itself, so every
-one arrives uncategorised (Phase 5) - the reply polisher and the ticket summariser
-are the only model calls built, and neither writes anything to a ticket. No seed script for sample tickets (3.4) - `email:test` makes better
+together with the classifier are the only paths here that cost money per call -
+and the classifier is now the one that spends without anyone asking, one call per
+inbound email, with no budget, no sampling and no retry; nothing outbound at all,
+so no student ever receives a reply (4.12-4.15). Of Phase 5, classification is
+done (5.3-5.5, 5.9) but there is still no `LlmCall` audit row (5.2), no prompt
+caching (5.8), no stored per-ticket summary (5.6, 5.7, 5.11), no suggested reply
+from a knowledge base, and nothing marks a category as AI-assigned (part of 5.10)
+because nothing records who set one. A backfill for the tickets that predate the
+classifier does not exist either - they keep `category: null`. No seed script for sample tickets (3.4) - `email:test` makes better
 demo data for this feature.
 
 Elsewhere: a restore or suspend control on `/users` (task 2.13e; the API

@@ -1,8 +1,9 @@
 /**
  * The boundaries the AI features' tests replace, and the fixtures they share.
  *
- * Both features - the reply polisher and the ticket summariser - go through the
- * same two edges, the ticket read and the model, so one module serves both.
+ * All three - the reply polisher, the ticket summariser and the automatic
+ * classifier - go through the same edges: a read of the ticket and the model. One
+ * module serves them all.
  *
  * **Why one module rather than a few lines in each test file.** `mock.module` is
  * process-global and `bun test` runs every file in one process with one module
@@ -35,7 +36,7 @@ import type {
 import { MockLanguageModelV4 } from "ai/test";
 import { mock } from "bun:test";
 import type { RequestHandler } from "express";
-import { MessageDirection, TicketStatus } from "../generated/prisma/enums.ts";
+import { MessageDirection, TicketStatus, type TicketCategory } from "../generated/prisma/enums.ts";
 import type { PublicMessage, PublicTicketDetail } from "../services/tickets.ts";
 
 // --- 1. the environment, made movable ---------------------------------------
@@ -120,6 +121,16 @@ export const DEFAULT_SUMMARY =
   "Ada cannot see her enrolment. Nothing has been done yet. Someone needs to check her record.";
 
 /**
+ * A model that picks `category`, in the shape `Output.choice` actually expects: a
+ * JSON object under the key `result`, validated against an `enum` of the options.
+ * Worth having as a helper rather than inline, because the key is the AI SDK's
+ * private business and a bare `"REFUND_REQUEST"` is a parse failure, not a choice.
+ */
+export function choosing(category: string) {
+  return answering(JSON.stringify({ result: category }));
+}
+
+/**
  * What `openAiModel()` hands back, or throws. The AI SDK's own mock model,
  * so `generateText` runs for real and a test can assert against the call it
  * actually built rather than against a stubbed-out `generateText`, which would
@@ -193,6 +204,39 @@ mock.module("../services/tickets.ts", () => ({
   addReply: mock(),
 }));
 
+// --- 4b. the database, for the classifier ------------------------------------
+
+/**
+ * The classifier goes to Prisma directly rather than through the tickets service
+ * - it reads two columns and writes one - so it needs its own seam. Only the two
+ * calls it makes are faked; nothing else in the suite touches the real client,
+ * because `services/tickets.ts` above is replaced wholesale.
+ */
+export const classifyRow = {
+  /** What `findUnique` answers with. `null` is a ticket that is not there. */
+  ticket: { subject: "Cannot see my enrolment", body: "I cannot see my enrolment.", category: null } as
+    | { subject: string; body: string; category: TicketCategory | null }
+    | null,
+  /** What `updateMany` reports. `0` means somebody classified it first. */
+  updatedCount: 1,
+  findError: undefined as unknown,
+  updateError: undefined as unknown,
+};
+
+export const ticketFindUnique = mock(async (_args: unknown) => {
+  if (classifyRow.findError) throw classifyRow.findError;
+  return classifyRow.ticket;
+});
+
+export const ticketUpdateMany = mock(async (_args: unknown) => {
+  if (classifyRow.updateError) throw classifyRow.updateError;
+  return { count: classifyRow.updatedCount };
+});
+
+mock.module("../lib/prisma.ts", () => ({
+  prisma: { ticket: { findUnique: ticketFindUnique, updateMany: ticketUpdateMany } },
+}));
+
 // --- 5. the session ----------------------------------------------------------
 
 /**
@@ -217,4 +261,15 @@ export function resetFakes() {
   ticketRead.ticket = detail();
   ticketRead.error = undefined;
   getTicket.mockClear();
+
+  classifyRow.ticket = {
+    subject: "Cannot see my enrolment",
+    body: "I cannot see my enrolment.",
+    category: null,
+  };
+  classifyRow.updatedCount = 1;
+  classifyRow.findError = undefined;
+  classifyRow.updateError = undefined;
+  ticketFindUnique.mockClear();
+  ticketUpdateMany.mockClear();
 }

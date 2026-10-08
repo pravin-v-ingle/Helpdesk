@@ -163,21 +163,26 @@ Still outstanding: a scheduled task to delete expired sessions.
 - **All calls are logged** to an `llm_calls` table: model, prompt version, input, output, tokens, cost, latency, ticket ID. Required for the audit trail (was a reply written by AI or a human) and for debugging classification.
 - API keys never reach the frontend. All Claude calls originate from the backend.
 
-### The one exception: OpenAI for the two on-demand text features
+### The one exception: OpenAI for the AI that is built
 
-Two buttons on the ticket detail page are the only calls in the system that do
-not go to Anthropic: **Polish**, which rewrites an agent's draft reply, and
-**Summarise**, which summarises the ticket and the conversation on it. Both go to
-OpenAI's `gpt-5-nano` through the **Vercel AI SDK** (`ai` + `@ai-sdk/openai`) and
-hand the text straight back; the server stores neither the input nor the result.
+Every AI call in the system so far goes to OpenAI's `gpt-5-nano` through the
+**Vercel AI SDK** (`ai` + `@ai-sdk/openai`) rather than to Anthropic. Three of
+them:
+
+- **Polish** - rewrites an agent's draft reply. On demand, stores nothing.
+- **Summarise** - summarises the ticket and its conversation. On demand, stores
+  nothing.
+- **Automatic classification** - sets a new ticket's category when it arrives.
+  The only one that writes to the database, and the only one nobody asked for:
+  it is fired unawaited from the inbound-email path once the transaction has
+  committed, so the webhook never waits on a model.
 
 Why it is a deviation rather than a change of direction:
 
-- It was asked for as `gpt-5-nano` specifically. The AI the system is actually
-  built around (Phase 5) stays on Claude: classification, and the summary and
-  suggested reply that are *stored on a ticket* and feed the agent's workflow.
-  These two are a different thing - text an agent asks for, reads and discards,
-  with nothing written to the database.
+- It was asked for as `gpt-5-nano` specifically, feature by feature. What is
+  left for Claude is the rest of Phase 5: the stored per-ticket summary and the
+  suggested reply drafted from the knowledge base, plus the `LlmCall` audit table
+  and prompt caching that neither provider's calls have yet.
 - The AI SDK rather than `openai` directly, because it is a provider-agnostic
   client: moving these calls to Claude later is a one-line change in
   `server/src/lib/ai.ts`, with the services above it untouched. One model setting
@@ -186,12 +191,15 @@ Why it is a deviation rather than a change of direction:
 - `OPENAI_API_KEY` is the only **optional** secret in `env.ts`. A deployment
   without one boots and works; the button answers 503 with a sentence the
   composer shows. Nothing else in the system depends on it.
-- The prompts carry a student's own words, so both calls set `store: false` -
-  OpenAI is asked to retain nothing. That does not settle the open question
-  below about third-party LLMs and student data; it is the least a call can do
-  while the question is open. The summary is the wider exposure of the two: its
-  prompt is the whole conversation, where the polisher sends only the last six
-  messages. Neither stores anything on either side.
+- The prompts carry a student's own words, so all three calls set
+  `store: false` - OpenAI is asked to retain nothing. That does not settle the
+  open question below about third-party LLMs and student data; it is the least a
+  call can do while the question is open. The summary is the widest exposure: its
+  prompt is the whole conversation, where the polisher sends the last six messages
+  and the classifier only the subject and opening message. **Classification is the
+  one that happens without anybody asking** - every inbound email now reaches
+  OpenAI - which is the sharpest form that open question has taken, and the reason
+  `OPENAI_API_KEY` being unset has to remain a working configuration.
 
 ## Email
 

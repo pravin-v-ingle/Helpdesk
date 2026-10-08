@@ -26,7 +26,13 @@ import {
   resetFakes,
   ticketRead,
 } from "../test/ai-fakes.ts";
-import { MAX_SUMMARY_LENGTH, summarizeTicket } from "./summarize-ticket.ts";
+import { MAX_SUMMARY_LENGTH } from "./summarize-ticket.ts";
+
+// `await import` for the function under test, not a static import: `mock.module`
+// is not hoisted in Bun, and a static import can be evaluated before `ai-fakes`
+// has finished registering its fakes, binding the real modules instead. The
+// constant above is a plain number with no dependencies, so it is safe either way.
+const { summarizeTicket } = await import("./summarize-ticket.ts");
 
 /** The one call the model was asked to make. Fails the test if there was none. */
 function call(): ModelCall {

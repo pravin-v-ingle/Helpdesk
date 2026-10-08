@@ -124,13 +124,19 @@ dropped until there is a blob store to put them in.
 
 - [ ] 5.1 Add the Claude client wrapper with timeouts and retries.
 - [ ] 5.2 Add the `LlmCall` model logging model, prompt version, tokens, cost, latency, and ticket for every call.
-- [ ] 5.3 Write the classification prompt with a structured output schema restricted to the three categories.
-- [ ] 5.4 Implement the classification job, run when a ticket is created.
-- [ ] 5.5 Store the AI category and let an agent override it.
+- [x] 5.3 Write the classification prompt with a structured output schema restricted to the three categories.
+- [x] 5.4 Implement the classification job, run when a ticket is created. (Not a
+      job: fired unawaited from the inbound path once the transaction has
+      committed. `RawEmail.processedAt IS NULL` and now `Ticket.category IS NULL`
+      are the seams a real worker would claim - see 4.2/4.5.)
+- [x] 5.5 Store the AI category and let an agent override it. (The write is
+      conditional on `category` still being null, so a correction made while the
+      model was thinking is not overwritten.)
 - [ ] 5.6 Write the summarisation prompt.
 - [ ] 5.7 Implement the summary job, re-running when a new message arrives.
 - [ ] 5.8 Apply prompt caching to the fixed part of the prompt.
-- [ ] 5.9 Make ticket creation succeed even when an AI call fails.
+- [x] 5.9 Make ticket creation succeed even when an AI call fails. (Structural:
+      classification runs after the commit and never throws.)
 - [ ] 5.10 Show the category on the ticket list and detail pages, marked as AI-assigned and editable.
 - [ ] 5.11 Show the summary on the ticket detail page.
 
