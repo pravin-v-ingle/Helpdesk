@@ -1,9 +1,14 @@
 /**
- * The boundaries the AI features' tests replace, and the fixtures they share.
+ * **The one place every server test registers a module fake.**
  *
- * All three - the reply polisher, the ticket summariser and the automatic
- * classifier - go through the same edges: a read of the ticket and the model. One
- * module serves them all.
+ * Not "the AI fakes" any more, though that is still most of what is here. The name
+ * is deliberately broad because the rule below admits no second registry: the AI
+ * features reach the model and the ticket read, the queue wrapper reaches pg-boss,
+ * and both read `env` - so all of it is registered here, once, in one order.
+ *
+ * That rule has now been learned twice. A `queue.test.ts` that registered its own
+ * `env` fake took the `env` fake away from the classifier's tests and broke
+ * twenty-eight of them, in a different file, with nothing pointing at the cause.
  *
  * **Why one module rather than a few lines in each test file.** `mock.module` is
  * process-global and `bun test` runs every file in one process with one module
@@ -54,9 +59,19 @@ export const openaiEnv = {
   model: "gpt-5-nano",
 };
 
+/** The `env.queue` section, mutable so a test can switch the queue off. */
+export const queueEnv = {
+  enabled: true,
+  runWorkers: true,
+  schema: "pgboss",
+};
+
+// One registration covering both sections, which is the whole point of this
+// module: two `mock.module("../env.ts")` calls in two test files means whichever
+// loads second is silently ignored.
 mock.module("../env.ts", () => ({
   ...realEnvModule,
-  env: { ...realEnvModule.env, openai: openaiEnv },
+  env: { ...realEnvModule.env, openai: openaiEnv, queue: queueEnv },
 }));
 
 // --- 2. the real wrapper, before it is replaced ------------------------------
@@ -237,6 +252,64 @@ mock.module("../lib/prisma.ts", () => ({
   prisma: { ticket: { findUnique: ticketFindUnique, updateMany: ticketUpdateMany } },
 }));
 
+// --- 4c. pg-boss, for the queue wrapper --------------------------------------
+
+/** One `send` the fake pg-boss recorded, so its `db` option can be inspected. */
+export type SendCall = { name: string; data: unknown; options: { db?: unknown } | undefined };
+
+export type BossHandler = (jobs: { id: string; data: unknown }[]) => Promise<void>;
+
+/**
+ * What the fake pg-boss did, and what it should do next. A real instance would
+ * want a running Postgres, which a unit test must not have.
+ */
+export const bossUse = {
+  sends: [] as SendCall[],
+  created: [] as string[],
+  works: [] as { name: string; options: Record<string, unknown>; handler: BossHandler }[],
+  startError: undefined as unknown,
+  stopError: undefined as unknown,
+};
+
+export const boss = {
+  on: mock(() => {}),
+  start: mock(async () => {
+    if (bossUse.startError) throw bossUse.startError;
+  }),
+  createQueue: mock(async (name: string, _options?: unknown) => {
+    bossUse.created.push(name);
+  }),
+  send: mock(async (name: string, data: unknown, options?: { db?: unknown }) => {
+    bossUse.sends.push({ name, data, options });
+    return "job-id";
+  }),
+  stop: mock(async (_options?: unknown) => {
+    if (bossUse.stopError) throw bossUse.stopError;
+  }),
+  work: mock(async (name: string, options: Record<string, unknown>, handler: BossHandler) => {
+    bossUse.works.push({ name, options, handler });
+    return "worker-id";
+  }),
+};
+
+/**
+ * Stands in for the executor pg-boss builds from a Prisma transaction. What the
+ * tests assert is that *something derived from the transaction* reaches `send`,
+ * not what shape it has - that part is pg-boss's own business.
+ */
+export const PRISMA_EXECUTOR = { __fromPrisma: true };
+
+export const fromPrisma = mock((_tx: unknown) => PRISMA_EXECUTOR);
+
+mock.module("pg-boss", () => ({
+  PgBoss: class {
+    constructor(public options: unknown) {
+      Object.assign(this, boss);
+    }
+  },
+  fromPrisma,
+}));
+
 // --- 5. the session ----------------------------------------------------------
 
 /**
@@ -272,4 +345,17 @@ export function resetFakes() {
   classifyRow.updateError = undefined;
   ticketFindUnique.mockClear();
   ticketUpdateMany.mockClear();
+
+  queueEnv.enabled = true;
+  queueEnv.runWorkers = true;
+  bossUse.sends.length = 0;
+  bossUse.created.length = 0;
+  bossUse.works.length = 0;
+  bossUse.startError = undefined;
+  bossUse.stopError = undefined;
+  fromPrisma.mockClear();
+  boss.send.mockClear();
+  boss.createQueue.mockClear();
+  boss.stop.mockClear();
+  boss.work.mockClear();
 }

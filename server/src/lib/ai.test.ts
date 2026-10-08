@@ -3,12 +3,12 @@
  *
  * `env.ts` reads `process.env` once at import time and this module is the only
  * thing in the system that cares whether `OPENAI_API_KEY` is set, so the tests
- * move `env.openai` instead - see `test/ai-fakes.ts`, which owns that
+ * move `env.openai` instead - see `test/fakes.ts`, which owns that
  * substitution and hands back the *real* `openAiModel` captured before
  * `lib/ai.ts` is itself faked for everything downstream.
  */
 import { beforeEach, describe, expect, it } from "bun:test";
-import { openaiEnv, realOpenAiModel, resetFakes } from "../test/ai-fakes.ts";
+import { openaiEnv, realOpenAiModel, resetFakes } from "../test/fakes.ts";
 import { HttpError } from "../middleware/error-handler.ts";
 
 describe("openAiModel", () => {

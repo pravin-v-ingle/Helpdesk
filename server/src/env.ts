@@ -122,6 +122,45 @@ function openAiApiKey(): string | undefined {
   return process.env.OPENAI_API_KEY?.trim() || undefined;
 }
 
+/**
+ * Whether this deployment runs the pg-boss job queue at all.
+ *
+ * On by default, because the classifier needs it: `services/inbound-email.ts`
+ * enqueues a classification job inside the same transaction that creates the
+ * ticket, and with no queue there is nothing to enqueue into.
+ *
+ * The one place it is deliberately off is the e2e stack (`.env.test`), which
+ * wants neither the `pgboss` schema in its database nor a worker polling it.
+ * **Off is a configuration, not a failure**: the inbound path skips the enqueue
+ * and the ticket is created uncategorised. A queue that is *meant* to be there
+ * and is broken behaves completely differently - see `lib/queue.ts`.
+ */
+function queueEnabled(): boolean {
+  return boolish("QUEUE_ENABLED", true);
+}
+
+/**
+ * Whether this process also *runs* the workers, as against only enqueueing.
+ *
+ * The two are separate axes. One process doing both is the default and is what
+ * `bun run dev` gives you; setting this false on the API and running
+ * `bun src/worker.ts` elsewhere splits them, which is the point of putting the
+ * queue in Postgres rather than in memory. Ignored when the queue is off.
+ */
+function runWorkers(): boolean {
+  return boolish("RUN_WORKERS", true);
+}
+
+function boolish(name: string, fallback: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (raw === undefined || raw === "") return fallback;
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+
+  console.error(`Environment variable ${name} must be true or false, got: ${raw}`);
+  process.exit(1);
+}
+
 const port = optionalNumber("PORT", 3000);
 const nodeEnv = process.env.NODE_ENV ?? "development";
 const isProductionEnv = nodeEnv === "production";
@@ -264,6 +303,23 @@ export const env = {
   openai: {
     apiKey: openAiApiKey(),
     model: process.env.OPENAI_MODEL?.trim() || DEFAULT_OPENAI_MODEL,
+  },
+  /**
+   * The pg-boss job queue. It shares `DATABASE_URL` with Prisma - the whole
+   * reason for choosing a Postgres-backed queue is that it needs no second
+   * piece of infrastructure - but keeps its own `pgboss` schema, which it
+   * creates and migrates itself on start. Nothing in `prisma/schema.prisma`
+   * describes those tables and nothing should.
+   */
+  queue: {
+    enabled: queueEnabled(),
+    runWorkers: runWorkers(),
+    /**
+     * The Postgres schema pg-boss owns. Its own default, named here so the
+     * boundary between "Prisma's tables" and "the queue's tables" is written
+     * down rather than implied.
+     */
+    schema: process.env.QUEUE_SCHEMA?.trim() || "pgboss",
   },
 } as const;
 

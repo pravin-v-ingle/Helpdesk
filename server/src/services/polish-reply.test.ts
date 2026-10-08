@@ -8,7 +8,7 @@
  * - **The test file sits beside the module**, as the client's do.
  * - **Two boundaries are replaced and nothing else**: the ticket read, so no test
  *   touches Postgres, and the model, so no test touches OpenAI. Both live in
- *   `test/ai-fakes.ts`, which explains why every fake these features share is
+ *   `test/fakes.ts`, which explains why every fake these features share is
  *   registered in one place.
  * - **The model is the AI SDK's own `MockLanguageModelV4`**, so `generateText`
  *   runs for real and the assertions below are made against the call the service
@@ -30,7 +30,7 @@ import {
   openAiModel,
   resetFakes,
   ticketRead,
-} from "../test/ai-fakes.ts";
+} from "../test/fakes.ts";
 
 const { polishReply } = await import("./polish-reply.ts");
 

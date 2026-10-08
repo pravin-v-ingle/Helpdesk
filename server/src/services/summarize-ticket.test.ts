@@ -1,7 +1,7 @@
 /**
  * Unit tests for the ticket summariser. The same shape as the polisher's beside
  * it: the ticket read and the model are the only things replaced, both from
- * `test/ai-fakes.ts`, and the model is the AI SDK's own mock so `generateText`
+ * `test/fakes.ts`, and the model is the AI SDK's own mock so `generateText`
  * runs for real and these assertions are made against the call the service
  * actually built.
  *
@@ -25,11 +25,11 @@ import {
   openAiModel,
   resetFakes,
   ticketRead,
-} from "../test/ai-fakes.ts";
+} from "../test/fakes.ts";
 import { MAX_SUMMARY_LENGTH } from "./summarize-ticket.ts";
 
 // `await import` for the function under test, not a static import: `mock.module`
-// is not hoisted in Bun, and a static import can be evaluated before `ai-fakes`
+// is not hoisted in Bun, and a static import can be evaluated before `fakes.ts`
 // has finished registering its fakes, binding the real modules instead. The
 // constant above is a plain number with no dependencies, so it is safe either way.
 const { summarizeTicket } = await import("./summarize-ticket.ts");

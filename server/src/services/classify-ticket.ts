@@ -6,25 +6,38 @@
  * than the Claude the plan named - the same deviation the two on-demand features
  * already made, recorded in `tech-stack.md`.
  *
- * **It runs after the inbound transaction has committed and nothing waits for
- * it.** `services/inbound-email.ts` calls this without `await`, so the webhook has
- * already answered the provider by the time a model is asked anything. That is the
- * whole shape of the feature, and three properties follow from it:
+ * **It runs in a pg-boss worker, off the webhook's thread entirely.**
+ * `services/inbound-email.ts` enqueues `ticket.classify` inside the transaction
+ * that creates the ticket; `jobs/classify-ticket.ts` is the handler that calls
+ * this. The webhook has answered the provider long before a model is asked
+ * anything.
  *
- * 1. **This function never throws.** Nobody is holding the promise, and an
- *    unhandled rejection would take the process down over a failed classification.
- *    Every failure is logged and swallowed, and the ticket keeps `category: null`.
- * 2. **A failure cannot cost a ticket** (task 5.9). The ticket, its message and the
- *    `RawEmail` row are all committed before this starts. There is nothing left to
- *    roll back and nothing for the provider to retry.
- * 3. **`category IS NULL` is the seam** a backfill or a worker would claim, exactly
- *    as `RawEmail.processedAt IS NULL` is for conversion. Nothing retries today: a
- *    ticket that failed to classify stays uncategorised until an agent sets it.
+ * **The error contract is the queue's, which is the opposite of what it was.**
+ * This used to be called with a bare `void` and so had to swallow everything.
+ * Now pg-boss is holding the promise, and a thrown error is how a job earns its
+ * retry - three attempts with exponential backoff. So:
+ *
+ * - **Transient failures throw**: a rate limit, a timed-out provider, a model
+ *   that answered with something unparseable, a database hiccup. All are worth
+ *   another go in half a minute, and that retry is the entire reason to put this
+ *   on a queue rather than firing it and hoping.
+ * - **Permanent outcomes return `null`** and are logged, not thrown: no such
+ *   ticket, already classified, an agent got there first, or a server with no
+ *   `OPENAI_API_KEY`. Retrying any of them would fail in exactly the same way
+ *   three more times and then fill the dead-letter queue with noise.
+ *
+ * Two properties survive the change. **A failure still cannot cost a ticket**
+ * (task 5.9): the ticket, its message and the `RawEmail` row are committed before
+ * the worker picks the job up, so a classification that fails for good leaves a
+ * working, uncategorised ticket. And **`category IS NULL` is still the seam** a
+ * backfill would claim - for the tickets that predate the classifier, and for the
+ * ones whose jobs exhausted their retries.
  *
  * There is no `LlmCall` audit row (task 5.2) and no prompt caching (5.8); neither
  * exists yet for the other two features either.
  */
 import { generateText, Output } from "ai";
+import { env } from "../env.ts";
 import { TicketCategory } from "../generated/prisma/enums.ts";
 import { openAiModel } from "../lib/ai.ts";
 import { prisma } from "../lib/prisma.ts";
@@ -105,57 +118,60 @@ const INSTRUCTIONS = [
 /**
  * Classify one ticket and record the result, unless somebody got there first.
  *
- * Returns the category it stored, or `null` when it stored nothing - for any
- * reason at all, including every failure. The caller is a fire-and-forget `void`
- * and has no use for the distinction; the return value is for tests and for a
- * future caller that does want to know.
+ * Returns the category it stored, or `null` when there was deliberately nothing
+ * to store. **Throws on a transient failure**, which is how the pg-boss worker
+ * above it earns the job a retry - see the note at the top of this file for which
+ * failures are which.
  */
 export async function classifyTicket(ticketId: number): Promise<TicketCategory | null> {
-  try {
-    const ticket = await prisma.ticket.findUnique({
-      where: { id: ticketId },
-      select: { subject: true, body: true, category: true },
-    });
+  const ticket = await prisma.ticket.findUnique({
+    where: { id: ticketId },
+    select: { subject: true, body: true, category: true },
+  });
 
-    if (!ticket) {
-      // Nothing deletes a ticket, so this is a programming error rather than a
-      // race - worth a line in the log and not worth a throw.
-      console.warn(`Not classifying ticket ${ticketId}: no such ticket.`);
-      return null;
-    }
-
-    // Already classified, so there is nothing to decide and no reason to pay for
-    // a decision. Reachable because this runs unawaited: an agent can open a
-    // brand-new ticket and set its category inside the second the model takes.
-    if (ticket.category !== null) return null;
-
-    const category = await askModel(ticket.subject, ticket.body);
-
-    // **The write is conditional, and that is the important line in this file.**
-    // Between the read above and here an agent may have classified the ticket by
-    // hand, and a human's answer must not be overwritten by a machine's - so the
-    // update matches on `category: null` and quietly does nothing if it is no
-    // longer null. An `update` by id would have clobbered them.
-    const { count } = await prisma.ticket.updateMany({
-      where: { id: ticketId, category: null },
-      data: { category },
-    });
-
-    if (count === 0) {
-      console.info(
-        `Not classifying ticket ${ticketId} as ${category}: it was categorised while the model was thinking.`,
-      );
-      return null;
-    }
-
-    return category;
-  } catch (err) {
-    // Includes the 503 from `openAiModel` on a server with no key, which is not
-    // an error so much as a server that does not do this. Either way a ticket
-    // without a category is a working ticket, so nothing is escalated.
-    console.error(`Classifying ticket ${ticketId} failed:`, err);
+  if (!ticket) {
+    // Nothing deletes a ticket, so this is a job for an id that never existed -
+    // a programming error, and not one a retry would fix.
+    console.warn(`Not classifying ticket ${ticketId}: no such ticket.`);
     return null;
   }
+
+  // Already classified, so there is nothing to decide and no reason to pay for a
+  // decision. Reachable because the job runs after the ticket is committed: an
+  // agent can open a brand-new ticket and set its category before the worker
+  // picks the job up.
+  if (ticket.category !== null) return null;
+
+  // A server with no key does not do this, which is a configuration rather than a
+  // failure - so it is answered here instead of being left to throw, because
+  // three retries and a dead-letter row would say something is wrong when
+  // nothing is. Checked against `env` rather than by catching the 503, so the
+  // distinction does not depend on a message.
+  if (!env.openai.apiKey) {
+    console.info(`Not classifying ticket ${ticketId}: AI features are not configured.`);
+    return null;
+  }
+
+  const category = await askModel(ticket.subject, ticket.body);
+
+  // **The write is conditional, and that is the important line in this file.**
+  // Between the read above and here an agent may have classified the ticket by
+  // hand, and a human's answer must not be overwritten by a machine's - so the
+  // update matches on `category: null` and quietly does nothing if it is no
+  // longer null. An `update` by id would have clobbered them.
+  const { count } = await prisma.ticket.updateMany({
+    where: { id: ticketId, category: null },
+    data: { category },
+  });
+
+  if (count === 0) {
+    console.info(
+      `Not classifying ticket ${ticketId} as ${category}: it was categorised while the model was thinking.`,
+    );
+    return null;
+  }
+
+  return category;
 }
 
 /**

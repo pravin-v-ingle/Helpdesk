@@ -55,6 +55,10 @@ has no build or transpile step.
 - Email: provider-agnostic inbound, one adapter per provider (`server/src/lib/email/`),
   chosen by `INBOUND_EMAIL_PROVIDER`; Mailgun is the default because SendGrid
   Inbound Parse has no signature mechanism. Outbound send not yet added.
+- Jobs: **pg-boss** in the application's own Postgres (`lib/queue.ts`), its own
+  `pgboss` schema which it migrates itself. Classification is the only queued
+  work so far; `QUEUE_ENABLED` and `RUN_WORKERS` control it and both default on
+  (see Background jobs)
 - Testing: Playwright end-to-end in `e2e/`, Chromium only, against a separate
   `helpdesk_test` database; Vitest + React Testing Library on jsdom for
   client component tests, and **`bun test`** for server unit tests - Bun's own
@@ -68,7 +72,8 @@ Run from the repository root:
 |---|---|
 | `bun install` | Install all workspace dependencies |
 | `bun run dev` | Start API and client together |
-| `bun run dev:server` | API only, port 3000 |
+| `bun run dev:server` | API only, port 3000 - starts the job queue and its workers too |
+| `cd server && bun run worker` | The job workers on their own, with no HTTP server |
 | `bun run dev:client` | Client only, port 5173 |
 | `bun run build` | Build both workspaces |
 | `bun run typecheck` | Typecheck all workspaces |
@@ -114,16 +119,19 @@ client/          React app
 server/          Express API
   src/
     routes/      Express routers, thin
+    jobs/        pg-boss worker handlers (one per queue) and their registration
     services/    business logic
     middleware/  error handling, auth
     lib/         clients and shared setup, parseBody() for shared schemas,
                  serializable() in transaction.ts
+      queue.ts   pg-boss: lifecycle, queue names, transactional enqueue
       email/     inbound provider adapters: the InboundEmail contract
                  (inbound-email.ts), the registry (providers.ts), mailgun.ts,
                  sendgrid.ts, and the shared parsing bits - multipart.ts,
                  address.ts, strip-quoted-reply.ts
     app.ts       app assembly
-    index.ts     entry point
+    index.ts     entry point - starts the queue, then listens
+    worker.ts    entry point for the workers alone, with no HTTP server
     env.ts       environment configuration
   scripts/       reset-test-db.ts - resets the e2e database;
                  send-test-email.ts - signs and POSTs a test inbound email
@@ -1047,25 +1055,34 @@ nothing for an agent to trigger: `services/classify-ticket.ts` is called from th
 inbound path and that is the whole interface. Tasks 5.3, 5.4, 5.5 and 5.9.
 
 **It is non-blocking, and that is the shape of the feature.** `convert()` in
-`services/inbound-email.ts` finishes its serializable transaction, then calls
-`void classifyTicket(ticketId)` and returns. The webhook has answered the provider
-before a model is asked anything - measured at about 1.2s round trip including
-Bun's own start-up, where the model takes a second or two more on its own. Three
-properties follow and all three are load-bearing:
+`services/inbound-email.ts` enqueues `ticket.classify` on the pg-boss queue
+*inside* its serializable transaction, and returns. A worker picks the job up a
+second or two later and does the model call; the webhook has long since answered
+the provider - measured at about 1.2s round trip including Bun's own start-up.
+See Background jobs above for the queue's own rules. Three properties follow and
+all three are load-bearing:
 
-1. **`classifyTicket` never throws.** Nobody holds the promise, so a rejection
-   would be unhandled and could take the process down over a category. Every
-   failure is logged and swallowed and the function returns `null`. This is why a
-   bare `void` at the call site is safe, and the reason most of
-   `classify-ticket.test.ts` is failure cases asserting a `null` rather than a
-   throw.
+1. **The job commits with the ticket.** `enqueueInTransaction` writes the job row
+   through the same `tx`, so there is no window in which a ticket exists and
+   nobody has been told to classify it. A failed enqueue aborts the transaction,
+   which is safe: the payload is stored, the route answers 500, and the
+   provider's retry resumes from it.
 2. **A failed classification cannot cost a ticket** (task 5.9). The ticket, its
-   message and the `RawEmail` row are committed before this starts, so there is
-   nothing to roll back and nothing for the provider to retry.
-3. **`Ticket.category IS NULL` is the seam**, exactly as `RawEmail.processedAt IS
-   NULL` is for conversion. Nothing retries today: a ticket that failed to
-   classify stays uncategorised until an agent sets it, and a backfill or a real
-   worker (4.2/4.5) would claim rows by that predicate.
+   message and the `RawEmail` row are all committed before the worker picks the
+   job up, so a classification that fails for good leaves a working,
+   uncategorised ticket.
+3. **`Ticket.category IS NULL` is still the seam**, exactly as
+   `RawEmail.processedAt IS NULL` is for conversion - now for the tickets that
+   predate the classifier and the ones whose jobs exhausted their three retries.
+   No backfill exists.
+
+**The service throws on a transient failure and returns `null` on a permanent
+one**, which is the opposite of what it did before the queue: pg-boss holds the
+promise now, and a thrown error is how a job earns its retry. A rate limit, a
+timeout or an unparseable answer throws; a missing ticket, an already-classified
+ticket, a lost race or a server with no `OPENAI_API_KEY` returns quietly, because
+retrying those would just fill the dead-letter queue. `jobs/classify-ticket.job.ts`
+is the handler and does nothing but validate the payload and call the service.
 
 Four decisions worth knowing:
 
@@ -1076,12 +1093,13 @@ Four decisions worth knowing:
   machine's. An `update` by id would have clobbered them. A `count` of 0 is logged
   and accepted. The category is also re-read before the call and the model is
   skipped entirely if it is already set, so the common case costs nothing.
-- **Only a new ticket, only once.** A reply arriving on an existing thread does not
-  re-classify it. The category is what the ticket is *about*, settled by the
+- **Only a new ticket, only once.** A reply arriving on an existing thread
+  enqueues nothing. The category is what the ticket is *about*, settled by the
   opening message; re-running on every message would overwrite an agent's
-  correction with a guess at a follow-up that says "thanks, any update?". Verified:
-  a technical-sounding reply to a `REFUND_REQUEST` ticket leaves it
-  `REFUND_REQUEST`.
+  correction with a guess at a follow-up that says "thanks, any update?".
+  Verified twice over: a technical-sounding reply to a `REFUND_REQUEST` ticket
+  leaves it `REFUND_REQUEST`, and a refund-sounding reply to a
+  `TECHNICAL_QUESTION` ticket adds no second row to `pgboss.job`.
 - **`Output.choice` from the AI SDK, not parsing.** The options come from
   `CATEGORY_GUIDE`, a `Record<TicketCategory, string>` of category → definition, so
   adding a fourth category is a compile error until it has a definition, and the
@@ -1113,12 +1131,14 @@ so that marking would be a claim the database cannot support. A page open at the
 moment a ticket arrives will not see the category appear; nobody is watching a
 ticket at the instant it is created.
 
-**AI is off in the e2e stack on purpose.** `server/.env.test` sets
-`OPENAI_API_KEY=` empty rather than leaving it out, because Bun layers `.env.test`
-over `server/.env` and a developer's real key would otherwise still be in the
-environment - every inbound-email spec would make a live classification call, and
-the ticket specs expect `category: null`. Empty means the classifier logs a 503 and
-leaves the category alone.
+**AI and the queue are both off in the e2e stack on purpose.**
+`server/.env.test` sets `OPENAI_API_KEY=` and `QUEUE_ENABLED=false`, both set
+rather than left out, because Bun layers `.env.test` over `server/.env` and a
+developer's own values would otherwise still be in the environment - every
+inbound-email spec would enqueue and make a live classification call, and the
+ticket specs expect `category: null`. With the queue off nothing is enqueued at
+all, which is the cheaper of the two guards; the empty key is the belt to its
+braces.
 
 `GET /api/assignees` (`routes/assignees.ts`) is the list of people a ticket can
 go to: active accounts only, `{ id, name, email, role }`, by name, unpaginated.
@@ -1131,6 +1151,86 @@ is not an admin privilege but it is not forbidden them either, and an admin who
 picks a ticket up must be able to be the one holding it. Deleted accounts are
 covered by the same `active: true` filter, because a deleted row always carries
 `active: false`.
+
+## Background jobs
+
+The queue is **pg-boss**, in the application's own Postgres. `tech-stack.md` has
+the reasoning; this is what you need to know to work on it. Task 4.2.
+
+`server/src/lib/queue.ts` owns the pg-boss instance, the queue names and the
+lifecycle. `server/src/jobs/` holds the handlers, one file per queue plus an
+`index.ts` that registers them. Both entry points call `startQueue()` then
+`startWorkers()`: `index.ts` (the API) and `worker.ts` (the workers alone).
+
+**pg-boss keeps its own `pgboss` schema and migrates it itself on `start()`.**
+Nothing in `prisma/schema.prisma` describes those tables, `bun run db:migrate`
+knows nothing about them, and there is no migration to write when a queue is
+added. `prisma migrate reset` on a database will drop the schema along with
+everything else; pg-boss recreates it on the next start, so there is nothing to
+restore.
+
+### Enqueue inside the transaction
+
+**`enqueueInTransaction(tx, name, data)`, not `send()` after the commit.** This
+is the whole reason a Postgres-backed queue was chosen, so it is the rule rather
+than an optimisation: `fromPrisma(tx)` hands pg-boss the transaction's own
+connection, so the job row is written by the same transaction as the work it
+describes. Either both commit or neither does, and the window where a process
+commits a ticket and then dies before anyone is told to classify it does not
+exist. `services/inbound-email.ts` is the example.
+
+**It throws, and callers must not catch it.** A failed enqueue should abort the
+transaction, which in the inbound path is safe rather than dangerous: the
+`RawEmail` payload is already stored with `processedAt` null, the route answers
+500, the provider retries, and the retry resumes from that stored row once the
+queue is back. Nothing is lost - it is deferred. Swallowing the error would
+instead leave a ticket nobody classifies and no record that anything went wrong.
+
+The one case that is not an error is `QUEUE_ENABLED=false`, where the enqueue
+returns `null` and does nothing. **Off is a configuration; broken is an error.**
+
+### Writing a handler
+
+`jobs/classify-ticket.job.ts` is the pattern. Its shape:
+
+- **The payload is an id, not a copy of the work's input.** A job is a claim on
+  work: the handler re-reads the row, so it acts on what the row says *now*
+  rather than what it said when the job was written - and sees a change a human
+  made in between. An id is also the only field that cannot go stale.
+- **A thrown error is how a job earns its retry**, and the queue's policy is
+  three attempts with exponential backoff, recorded on the queue row by
+  `createQueue` so a worker in another process inherits it. So the service a
+  handler calls has to throw on a *transient* failure and return quietly on a
+  permanent one - see the note at the top of `services/classify-ticket.ts`, which
+  spells out which is which. Getting it backwards is invisible: either a
+  classification is silently lost, or the dead-letter queue fills with work that
+  could never succeed.
+- **A payload that will never parse is logged and completed, not retried.** Three
+  attempts at something malformed is three attempts too many.
+- **`batchSize` is the concurrency limit.** pg-boss hands the handler an array
+  even when it holds one job; handle them in turn, because `Promise.all` would
+  multiply the limit. Two for classification - a ceiling on concurrent model
+  calls, so a backlog drains steadily instead of being rate limited.
+
+### Running it
+
+Workers run in the API process by default, which is what `bun run dev` gives.
+`RUN_WORKERS=false` on the API plus `bun run worker` elsewhere splits them, which
+is what the Postgres-backed queue is for: AI latency and request latency stop
+competing, an API deploy no longer interrupts a classification, and a backlog is
+drained by starting more workers. `worker.ts` refuses to start if either flag says
+it should not be running, rather than sitting there consuming nothing and looking
+healthy.
+
+Shutdown is graceful in both: the HTTP server closes first, then `stopQueue()`
+gives jobs in flight 25 seconds - longer than the classifier's own 20s model
+timeout, so a stop does not abandon the job it is waiting for.
+
+**The e2e stack runs with `QUEUE_ENABLED=false`** (`server/.env.test`), set
+rather than absent for the reason `OPENAI_API_KEY=` is: Bun layers `.env.test`
+over `.env`, so a developer's own value would otherwise still be in force. No
+`pgboss` schema in `helpdesk_test`, no worker polling during a run, and tickets
+are created uncategorised, which is what the specs expect.
 
 ## Testing
 
@@ -1285,10 +1385,13 @@ the page rather than the test, fix the page and say so.
 `bun test` inside the `server/` workspace, beside the module each one covers.
 The runtime is Bun and the server has no build step, so its own runner needs no
 dependency and no configuration - Vitest is the client's because Vite's jsdom
-setup is built around it. The five so far all belong to the two AI features -
-`src/services/polish-reply.test.ts`, `src/services/summarize-ticket.test.ts`,
-`src/routes/tickets.polish.test.ts`, `src/routes/tickets.summary.test.ts` and
-`src/lib/ai.test.ts`; read them, and `src/test/ai-fakes.ts`, before adding more.
+setup is built around it. The eight so far cover the three AI features and the
+job queue - `src/services/polish-reply.test.ts`,
+`src/services/summarize-ticket.test.ts`, `src/services/classify-ticket.test.ts`,
+`src/routes/tickets.polish.test.ts`, `src/routes/tickets.summary.test.ts`,
+`src/lib/ai.test.ts`, `src/lib/queue.test.ts` and
+`src/jobs/classify-ticket.job.test.ts`; read them, and `src/test/fakes.ts`,
+before adding more.
 
 | Command | Runs |
 |---|---|
@@ -1310,9 +1413,13 @@ model stays in `e2e/` or stays verified by hand.
    file loads a module first binds it for the whole run. Two files registering
    their own fake for the same module is a test that passes alone and fails in
    the suite - which is exactly what happened here before the fakes were moved
-   into one module. **Register every fake for a feature in one module** that each
-   test file imports first (`src/test/ai-fakes.ts` - one module for both AI
-   features, since they go through the same two edges), expose the state as
+   into one module, and again when a queue test registered a second `env` fake
+   and broke nineteen tests in the classifier's file. **Every fake for every
+   module goes in `src/test/fakes.ts`**, which each test file imports first - one
+   registry, one order, no races. Two corollaries worth stating because both were
+   violated once: a module another test file *tests* is never faked (the job test
+   drives the real classifier service rather than replacing it), and a module is
+   faked in exactly one place. Expose the state as
    mutable objects rather than values - a primitive export is snapshotted at
    import and later writes to it are invisible - and give it a `resetFakes()` for
    `beforeEach`. Do not pass `--concurrent`: two files driving one set of fakes at
@@ -1405,7 +1512,9 @@ ticket is in `core/`: no form posts a ticket, the webhook body is a provider's
 shape validated in its adapter, and a PATCH carries three server-owned enum
 fields the route reads one key at a time.
 
-Working on the server: Postgres and Prisma with migrations, Better Auth over
+Working on the server: Postgres and Prisma with migrations, pg-boss for
+background jobs in that same Postgres (one queue so far, `ticket.classify`, with
+`bun run worker` able to run the workers on their own), Better Auth over
 database-backed sessions, `requireAuth()` and `requireRole()`, `GET /api/me`,
 admin-only user management at `/api/users`, a seed script for the initial admin,
 the inbound email webhook at `POST /api/email/inbound` with a Mailgun and a
@@ -1420,9 +1529,9 @@ appends an agent's reply - stored on the ticket, emailed nowhere - with `GET
 admin-only. `POST /api/tickets/:id/polish` rewrites a draft reply and `POST
 /api/tickets/:id/summary` summarises the ticket and its thread, both with OpenAI
 `gpt-5-nano` through the Vercel AI SDK and both storing nothing. **A new ticket is
-also classified automatically**, by `services/classify-ticket.ts` fired unawaited
-from the inbound path after its transaction commits - the only AI that writes to
-the database and the only one nobody triggers. All three work off the one optional
+also classified automatically**, by `services/classify-ticket.ts` running in a
+pg-boss worker off a job the inbound path enqueues *inside* its own transaction -
+the only AI that writes to the database and the only one nobody triggers. All three work off the one optional
 secret (`OPENAI_API_KEY`; without it they log or answer 503 and the system
 otherwise behaves exactly as before). `bun run email:test` exercises the whole inbound path locally
 without a provider account - including the classifier, which is how it was
@@ -1568,13 +1677,16 @@ detail page (`UsersPage.test.tsx`, `TicketsPage.test.tsx`,
 of the page's POSTs are posts to a path under the ticket, and only the polish
 answers with text instead of a ticket).
 
-The three AI features are also the only things in `server/` with unit tests, under
-`bun test`: `services/polish-reply.test.ts`, `services/summarize-ticket.test.ts`
-and `services/classify-ticket.test.ts` for the prompts, the provider options and
-the guards, `routes/tickets.polish.test.ts` and `routes/tickets.summary.test.ts`
-for the HTTP contracts through a real Express app, and `lib/ai.test.ts` for the
-configured and unconfigured key. `src/test/ai-fakes.ts` owns every fake they share
-and `src/test/env-defaults.ts` keeps them off a developer's `.env`; see Testing →
+The AI features and the queue are the only things in `server/` with unit tests,
+under `bun test`: `services/polish-reply.test.ts`,
+`services/summarize-ticket.test.ts` and `services/classify-ticket.test.ts` for the
+prompts, the provider options and the guards, `routes/tickets.polish.test.ts` and
+`routes/tickets.summary.test.ts` for the HTTP contracts through a real Express
+app, `lib/ai.test.ts` for the configured and unconfigured key, and
+`lib/queue.test.ts` plus `jobs/classify-ticket.job.test.ts` for the queue - the
+transactional enqueue, the disabled-vs-broken split, and which job failures are
+retried. `src/test/fakes.ts` owns every fake they share and
+`src/test/env-defaults.ts` keeps them off a developer's `.env`; see Testing →
 Server unit tests, which is also where the `mock.module` rules that shape exists
 for are written down. **No test anywhere reaches a real model**, but all three
 features have been exercised against a running API with a real key: a live summary,
@@ -1589,14 +1701,19 @@ NULL` is the seam a worker slots into (4.2, 4.5); no provider account or real
 inbound route (4.1); attachment metadata is stored but the bytes are dropped; no
 rate limit on the webhook (8.3) and none on the two AI endpoints either, which
 together with the classifier are the only paths here that cost money per call -
-and the classifier is now the one that spends without anyone asking, one call per
-inbound email, with no budget, no sampling and no retry; nothing outbound at all,
+and the classifier is the one that spends without anyone asking, one call per
+inbound email, with no budget and no sampling (it does now retry, three times,
+which multiplies the worst case rather than bounding it); nothing outbound at all,
 so no student ever receives a reply (4.12-4.15). Of Phase 5, classification is
 done (5.3-5.5, 5.9) but there is still no `LlmCall` audit row (5.2), no prompt
 caching (5.8), no stored per-ticket summary (5.6, 5.7, 5.11), no suggested reply
 from a knowledge base, and nothing marks a category as AI-assigned (part of 5.10)
 because nothing records who set one. A backfill for the tickets that predate the
-classifier does not exist either - they keep `category: null`. No seed script for sample tickets (3.4) - `email:test` makes better
+classifier does not exist either - they keep `category: null`, as do any whose
+job exhausted its retries. Nothing surfaces a dead-letter job to a human: a
+permanently failed classification is visible only as an uncategorised ticket and
+a row in `pgboss.job`. Conversion itself is still inline rather than queued
+(4.5), so the queue carries classification and nothing else yet. No seed script for sample tickets (3.4) - `email:test` makes better
 demo data for this feature.
 
 Elsewhere: a restore or suspend control on `/users` (task 2.13e; the API

@@ -11,7 +11,7 @@
  * the request and the model is the genuine article. Only the two outside edges
  * are replaced - the ticket read and the model - plus `requireAuth`, which would
  * otherwise want a session out of Postgres. They all come from
- * `test/ai-fakes.ts`; that file explains why every fake these features share is
+ * `test/fakes.ts`; that file explains why every fake these features share is
  * registered in one place rather than per test file.
  *
  * So these are route tests that happen to run the service too. That is
@@ -32,7 +32,7 @@ import {
   modelUse,
   resetFakes,
   ticketRead,
-} from "../test/ai-fakes.ts";
+} from "../test/fakes.ts";
 
 const { ticketsRouter } = await import("./tickets.ts");
 const { errorHandler } = await import("../middleware/error-handler.ts");

@@ -14,7 +14,8 @@ import type { EmailProvider } from "../generated/prisma/enums.ts";
 import { prisma } from "../lib/prisma.ts";
 import { serializable } from "../lib/transaction.ts";
 import type { InboundEmail } from "../lib/email/inbound-email.ts";
-import { classifyTicket } from "./classify-ticket.ts";
+import { enqueueInTransaction, QUEUES } from "../lib/queue.ts";
+import type { ClassifyTicketJob } from "../jobs/classify-ticket.job.ts";
 
 export type IngestResult = {
   rawEmailId: number;
@@ -139,44 +140,7 @@ const RAW_EMAIL_FIELDS = {
  * that decided which. Serializable because two replies to the same new thread
  * arriving together would otherwise both find no parent and both open a ticket.
  */
-/**
- * What `convert` knows and `IngestResult` does not: whether a *new* ticket was
- * opened, as against a message appended to one that already existed. Only a new
- * ticket is classified - see the note at the foot of `convert`.
- */
-type ConvertOutcome = IngestResult & { newTicket: boolean };
-
 async function convert(rawEmailId: number, email: InboundEmail): Promise<IngestResult> {
-  const outcome = await convertInTransaction(rawEmailId, email);
-
-  // --- classification, deliberately not awaited -----------------------------
-  // The transaction above has committed, so there is a ticket whatever happens
-  // next. Not awaiting it is the point: the provider is waiting on a webhook
-  // response, and a model call belongs nowhere near that clock. `classifyTicket`
-  // never throws, which is what makes a bare `void` safe here - there is no
-  // catch to attach, and an unhandled rejection would take the process down over
-  // a category.
-  //
-  // Only a new ticket, and only once. A reply arriving on an existing thread
-  // does not re-classify it: the category is what the ticket is *about*, settled
-  // by the opening message, and an agent may have corrected it since - so
-  // re-running on every message would quietly overwrite their correction with a
-  // machine's guess at a follow-up that says "thanks, any update?".
-  if (outcome.newTicket && outcome.ticketId !== null) {
-    void classifyTicket(outcome.ticketId);
-  }
-
-  return {
-    rawEmailId: outcome.rawEmailId,
-    ticketId: outcome.ticketId,
-    duplicate: outcome.duplicate,
-  };
-}
-
-async function convertInTransaction(
-  rawEmailId: number,
-  email: InboundEmail,
-): Promise<ConvertOutcome> {
   return serializable(async (tx) => {
     const parentTicketId = await findParentTicket(tx, email);
 
@@ -196,13 +160,37 @@ async function convertInTransaction(
             bodyHtml: email.bodyHtml ?? "",
             requesterEmail: email.from.email,
             requesterName: email.from.name,
-            // `status` defaults to OPEN, `category` stays null until the Phase 5
-            // classifier runs, and `assignedToId` stays null because inbound
-            // mail names no one to give the ticket to. None is set here.
+            // `status` defaults to OPEN and `assignedToId` stays null, because
+            // inbound mail names no one to give the ticket to. `category` starts
+            // null too and is filled in by the classification job queued below,
+            // a second or two after this commits - so a ticket is briefly
+            // uncategorised by design, and stays that way if the job fails.
           },
           select: { id: true },
         })
       ).id;
+
+    // --- classification, queued in this very transaction ---------------------
+    // A new ticket needs a category, which takes a model call of a second or two
+    // - so it goes on the pg-boss queue and a worker does it. The webhook answers
+    // the provider in the meantime.
+    //
+    // **Enqueued inside the transaction, not after it.** pg-boss keeps its jobs in
+    // this same Postgres, so `enqueueInTransaction` writes the job row through
+    // `tx`: the ticket and the instruction to classify it commit together or not
+    // at all. There is no window in which a process commits a ticket and then dies
+    // before anyone is told to look at it. See `lib/queue.ts` for why a failure
+    // here is deliberately left to abort the transaction - the payload is already
+    // stored, so the provider's retry resumes from it.
+    //
+    // Only a new ticket, and only once. A reply arriving on an existing thread
+    // does not re-classify it: the category is what the ticket is *about*, settled
+    // by the opening message, and an agent may have corrected it since - so
+    // re-running on every message would quietly overwrite their correction with a
+    // machine's guess at a follow-up that says "thanks, any update?".
+    if (parentTicketId === null) {
+      await enqueueInTransaction<ClassifyTicketJob>(tx, QUEUES.classifyTicket, { ticketId });
+    }
 
     // A reply to a ticket someone had finished with belongs back in the queue.
     // Both RESOLVED and CLOSED reopen: filing a student's reply under a closed
@@ -238,7 +226,7 @@ async function convertInTransaction(
       },
     });
 
-    return { rawEmailId, ticketId, duplicate: false, newTicket: parentTicketId === null };
+    return { rawEmailId, ticketId, duplicate: false };
   }).catch(async (err) => {
     // The message is already ingested - the same mail reached us by two routes,
     // or a retry arrived while the first attempt was still in flight. Its
@@ -259,9 +247,9 @@ async function convertInTransaction(
           },
         });
         // The same mail by two routes, or a retry overtaking the first attempt.
-        // Its ticket already exists and is already being classified by whichever
-        // attempt created it, so this one does not start a second call.
-        return { rawEmailId, ticketId: existing.ticketId, duplicate: true, newTicket: false };
+        // Its ticket already exists and whichever attempt created it already
+        // queued the classification, so this one queues nothing.
+        return { rawEmailId, ticketId: existing.ticketId, duplicate: true };
       }
     }
     throw err;

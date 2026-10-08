@@ -3,20 +3,23 @@
  *
  * Two properties carry this feature and most of the file is about them:
  *
- * - **It never throws.** It is called with a bare `void` from the inbound path, so
- *   a rejection has nobody to catch it. Every failure below asserts a `null`
- *   return rather than a thrown error, which is the only reason that call site is
- *   safe.
+ * - **It throws exactly when a retry would help.** The job runs in a pg-boss
+ *   worker, so a thrown error is how the job earns its three retries - and a
+ *   swallowed one is a classification silently lost. The split the tests below
+ *   pin: a provider failure, a timeout or an unparseable answer throws; a missing
+ *   ticket, an already-classified ticket, a lost race or an unconfigured server
+ *   returns `null`, because retrying any of those just fills the dead-letter
+ *   queue. This is the reverse of what this file asserted before the queue
+ *   existed, when the caller was a bare `void` that could not catch anything.
  * - **It never overwrites a human.** The write is conditional on the category
- *   still being null, because an agent can classify a brand-new ticket inside the
- *   second the model takes.
+ *   still being null, because an agent can classify a brand-new ticket before the
+ *   worker picks the job up.
  *
- * Same seams as the other AI tests, from `test/ai-fakes.ts`, plus the Prisma calls
+ * Same seams as the other AI tests, from `test/fakes.ts`, plus the Prisma calls
  * this service makes directly.
  */
 import { beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { TicketCategory } from "../generated/prisma/enums.ts";
-import { HttpError } from "../middleware/error-handler.ts";
 import {
   answering,
   choosing,
@@ -25,13 +28,14 @@ import {
   type ModelCall,
   modelUse,
   openAiModel,
+  openaiEnv,
   resetFakes,
   ticketFindUnique,
   ticketUpdateMany,
-} from "../test/ai-fakes.ts";
+} from "../test/fakes.ts";
 
 // `await import`, not a static import: `mock.module` is not hoisted in Bun, and a
-// static import of the module under test can be evaluated before `ai-fakes` has
+// static import of the module under test can be evaluated before `fakes.ts` has
 // finished registering its fakes - which binds the real Prisma client and makes
 // every test here talk to the developer's database. The dynamic form cannot run
 // until the import above has fully evaluated.
@@ -71,9 +75,26 @@ function silence(level: "error" | "warn" | "info") {
   return spyOn(console, level).mockImplementation(() => {});
 }
 
+/**
+ * Asserts that classifying throws, and hands back what it threw. A rejection is
+ * the contract here, not a failure of it: pg-boss turns it into a retry.
+ */
+async function rejection(ticketId: number): Promise<unknown> {
+  try {
+    await classifyTicket(ticketId);
+  } catch (err) {
+    return err;
+  }
+  throw new Error("Expected classifyTicket to throw, but it resolved.");
+}
+
 describe("classifyTicket", () => {
   beforeEach(() => {
     resetFakes();
+    // A configured server is the premise of every test that expects a model call:
+    // the service checks `env.openai.apiKey` itself now, so that it can answer an
+    // unconfigured server without burning the job's retries.
+    openaiEnv.apiKey = "sk-unit-test";
     modelUse.model = choosing(TicketCategory.TECHNICAL_QUESTION);
   });
 
@@ -211,76 +232,70 @@ describe("classifyTicket", () => {
     expect(options.abortSignal).toBeInstanceOf(AbortSignal);
   });
 
-  // --- the failures, none of which may throw ---------------------------------
+  // --- transient failures, which must throw so the job is retried ------------
 
-  it("swallows a provider failure", async () => {
-    const logged = silence("error");
-    modelUse.model = failing(new Error("429 Rate limit reached"));
+  it("throws when the provider fails, so the job is retried", async () => {
+    const cause = new Error("429 Rate limit reached");
+    modelUse.model = failing(cause);
 
-    expect(await classifyTicket(7)).toBeNull();
+    // The error reaches pg-boss rather than being logged and forgotten - a rate
+    // limit half a minute ago is the single most retryable thing here.
+    await rejection(7);
     expect(ticketUpdateMany).not.toHaveBeenCalled();
-    expect(logged).toHaveBeenCalled();
-
-    logged.mockRestore();
   });
 
   /**
-   * A server with no `OPENAI_API_KEY` is not an error so much as a server that
-   * does not do this - and it is the state the e2e stack runs in deliberately.
+   * The response schema refuses an off-list answer inside the SDK. Worth a retry:
+   * the next attempt may well come back with one of the three, and the ticket
+   * keeps no category in the meantime rather than an invented one.
    */
-  it("swallows the unconfigured-server refusal", async () => {
-    const logged = silence("error");
-    modelUse.error = new HttpError(503, "AI features are not configured on this server.");
-
-    expect(await classifyTicket(7)).toBeNull();
-    expect(ticketUpdateMany).not.toHaveBeenCalled();
-    expect(logged).toHaveBeenCalled();
-
-    logged.mockRestore();
-  });
-
-  /**
-   * The schema refuses an off-list answer inside the SDK, which arrives here as a
-   * thrown error - so the ticket keeps no category rather than an invented one.
-   */
-  it("swallows an answer outside the category list", async () => {
-    const logged = silence("error");
+  it("throws on an answer outside the category list", async () => {
     modelUse.model = choosing("BILLING_DISPUTE");
 
-    expect(await classifyTicket(7)).toBeNull();
+    await rejection(7);
     expect(ticketUpdateMany).not.toHaveBeenCalled();
-    expect(logged).toHaveBeenCalled();
-
-    logged.mockRestore();
   });
 
-  it("swallows an answer that is not a choice at all", async () => {
-    const logged = silence("error");
+  it("throws on an answer that is not a choice at all", async () => {
     modelUse.model = answering("I think this one is technical.");
 
-    expect(await classifyTicket(7)).toBeNull();
+    await rejection(7);
     expect(ticketUpdateMany).not.toHaveBeenCalled();
-    expect(logged).toHaveBeenCalled();
-
-    logged.mockRestore();
   });
 
-  it("swallows a failed read", async () => {
-    const logged = silence("error");
+  it("throws when the ticket cannot be read", async () => {
     classifyRow.findError = new Error("connection terminated");
+
+    await rejection(7);
+    expect(openAiModel).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The model has already been paid for by this point, so a retry pays again -
+   * but a category that was decided and then lost to a deadlock is worth the
+   * second call, and the conditional write makes the retry safe.
+   */
+  it("throws when the category cannot be written", async () => {
+    classifyRow.updateError = new Error("deadlock detected");
+
+    await rejection(7);
+  });
+
+  // --- permanent outcomes, which must not throw ------------------------------
+
+  /**
+   * A server with no `OPENAI_API_KEY` does not do this at all - the state the e2e
+   * stack runs in deliberately. Three retries and a dead-letter row would claim
+   * something is broken when nothing is, so it is answered rather than thrown,
+   * and before the model is reached.
+   */
+  it("does nothing on a server with no API key", async () => {
+    const logged = silence("info");
+    openaiEnv.apiKey = undefined;
 
     expect(await classifyTicket(7)).toBeNull();
     expect(openAiModel).not.toHaveBeenCalled();
-    expect(logged).toHaveBeenCalled();
-
-    logged.mockRestore();
-  });
-
-  it("swallows a failed write", async () => {
-    const logged = silence("error");
-    classifyRow.updateError = new Error("deadlock detected");
-
-    expect(await classifyTicket(7)).toBeNull();
+    expect(ticketUpdateMany).not.toHaveBeenCalled();
     expect(logged).toHaveBeenCalled();
 
     logged.mockRestore();

@@ -101,7 +101,11 @@ provider-shaped payload locally. Attachment *metadata* is stored; the bytes are
 dropped until there is a blob store to put them in.
 
 - [ ] 4.1 Configure the email provider account, sending domain, and inbound route.
-- [ ] 4.2 Add the job queue and a worker process.
+- [x] 4.2 Add the job queue and a worker process. pg-boss in the application's own
+      Postgres (`server/src/lib/queue.ts`), with `server/src/worker.ts` as a
+      standalone worker entry point and the API running workers in-process by
+      default. Classification is the first and so far only queued work; see
+      `tech-stack.md` for why pg-boss over a broker.
 - [x] 4.3 Add a `RawEmail` model that stores the incoming provider payload as received.
 - [x] 4.4 Implement the inbound webhook endpoint with provider signature verification. *(Mailgun: HMAC-SHA256 over `timestamp + token`, plus a 15-minute freshness window. SendGrid Inbound Parse has **no signature mechanism at all** - its signed webhook is the Event Webhook, a different product - so that adapter authenticates with HTTP Basic credentials embedded in the parse URL. This is why Mailgun is the default.)*
 - [ ] 4.5 Make the webhook store the payload, queue a job, and return 200 immediately.

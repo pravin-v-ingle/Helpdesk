@@ -254,21 +254,41 @@ and everything outbound.
 
 ## Background processing
 
-Inbound email processing cannot happen inside the webhook request - AI calls take seconds and must be retried on failure. The system needs a durable work queue with retries; the specific library is an open decision.
+**The queue is pg-boss**, which keeps its jobs in the Postgres the application
+already uses. This settles what was an open decision here.
 
-- Queued work: parse email, classify, summarise, draft reply, send outbound, expire sessions, nightly cleanup.
-- Every unit of work is idempotent and has bounded retries with backoff. Permanently failed work is retained for inspection rather than silently dropped.
+- Queued work today: **classifying a new ticket**. Still to come: summarise,
+  draft reply, send outbound, expire sessions, nightly cleanup.
+- Every unit of work is idempotent and has bounded retries with backoff -
+  three attempts, exponential, recorded on the queue row in the database.
 
-**The queue is still an open decision, and inbound email runs inline without
-it.** The webhook parses and converts in the request, which it can afford to
-because there is no AI call in that path yet - the classifier is Phase 5. What
-makes this a staging post rather than a shortcut is where the seam was left:
-every payload is stored as a `RawEmail` *before* conversion, and
-`processedAt IS NULL` is exactly the query a worker will claim from. A
-conversion that fails leaves the payload with `processedAt` null and an `error`
-set, so the provider's retry resumes from the stored row instead of starting a
-second ticket. When the queue arrives, the webhook stops at the store and the
-worker picks up the same rows.
+**Why pg-boss over BullMQ or a hosted broker.** Two reasons, in order:
+
+1. **It needs no second piece of infrastructure.** The database is already
+   provisioned, already backed up, already in the deployment story and already
+   the thing that must be up for the app to work at all. A queue that lives in
+   it inherits all of that, where Redis would be one more thing to run, secure
+   and pay for. The price is polling rather than push, so a job starts within a
+   second or two instead of instantly - exactly the right trade for work nobody
+   is watching.
+2. **A job can be enqueued inside the transaction that creates the work.**
+   Because the jobs are rows in the same database, `fromPrisma(tx)` hands
+   pg-boss the transaction's own connection and the job commits with the ticket.
+   No external broker can do that. It removes the window where a process commits
+   a ticket and then dies before telling anyone to classify it - the gap that
+   otherwise needs a reconciliation sweep to close.
+
+pg-boss owns its own `pgboss` schema and migrates it itself on start. Nothing in
+`prisma/schema.prisma` describes those tables and `prisma migrate` knows nothing
+about them, which is the boundary that keeps the two migration systems from
+meeting.
+
+**Inbound email still converts inline**; only the classification is queued. The
+seam for moving conversion itself is unchanged and still unused: every payload is
+stored as a `RawEmail` *before* conversion, and `processedAt IS NULL` is exactly
+the query a worker would claim from. A conversion that fails leaves the payload
+with `processedAt` null and an `error` set, so the provider's retry resumes from
+the stored row instead of starting a second ticket.
 
 ## Deployment
 

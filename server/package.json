@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "bun --hot src/index.ts",
     "start": "bun src/index.ts",
+    "worker": "bun src/worker.ts",
+    "worker:dev": "bun --hot src/worker.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "db:generate": "prisma generate",
@@ -25,6 +27,7 @@
     "ai": "^7.0.127",
     "better-auth": "^1.7.2",
     "express": "^5.1.0",
+    "pg-boss": "^12.37.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

@@ -4,7 +4,7 @@
  * Same arrangement as `tickets.polish.test.ts` beside it: the router on a bare
  * Express app with the real `express.json()`, the real `errorHandler` and the real
  * service, with only the ticket read, the model and `requireAuth` replaced from
- * `test/ai-fakes.ts`. Its own file because it is its own endpoint; its own Express
+ * `test/fakes.ts`. Its own file because it is its own endpoint; its own Express
  * app and port because two files cannot share one listener.
  */
 import express from "express";
@@ -20,7 +20,7 @@ import {
   modelUse,
   resetFakes,
   ticketRead,
-} from "../test/ai-fakes.ts";
+} from "../test/fakes.ts";
 
 const { ticketsRouter } = await import("./tickets.ts");
 const { errorHandler } = await import("../middleware/error-handler.ts");
