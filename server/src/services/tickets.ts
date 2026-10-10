@@ -194,6 +194,20 @@ const messageSelect = {
 
 const ticketDetailSelect = {
   ...publicTicketSelect,
+  /**
+   * Set when the knowledge-base auto-resolver answered this ticket, and the only
+   * record anywhere that a reply was not written by a person - the thread itself
+   * says nothing about it. The detail page turns this into a notice above the
+   * subject.
+   *
+   * **Here and not in `publicTicketSelect`.** The list does not filter on it and
+   * shows nothing about it, so putting it on a list row would make it a field no
+   * page reads - which is the rule `body` and `assignedToId` already follow. It
+   * has to be its own key rather than coming through the spread above for the
+   * same reason. `updateTicket` and `addReply` return this shape too, which is
+   * correct: a reply or a status change does not clear the fact.
+   */
+  autoResolvedAt: true,
   // The agent's name is what the page shows; the id is what a future assign
   // control would write back.
   assignedTo: { select: { id: true, name: true, email: true } },

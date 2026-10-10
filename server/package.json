@@ -15,6 +15,7 @@
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
     "db:seed": "bun prisma/seed.ts",
+    "db:seed:tickets": "bun prisma/seed-tickets.ts",
     "db:test:reset": "bun scripts/reset-test-db.ts",
     "email:test": "bun scripts/send-test-email.ts",
     "start:test": "bun run db:test:reset && bun src/index.ts"

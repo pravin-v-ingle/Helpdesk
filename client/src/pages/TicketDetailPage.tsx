@@ -157,6 +157,12 @@ function TicketView({ ticket }: { ticket: TicketDetail }) {
 
   return (
     <>
+      {/* Above the heading, not beside the status in the Details card, and that
+          placement is the whole argument for it: it is not another property of
+          the ticket, it changes how everything below should be read. An agent
+          who scrolls to the reply first has still seen it. */}
+      <AutoResolvedNotice at={ticket.autoResolvedAt} />
+
       {/* The subject spans both columns: it names the whole page, not the
           thread, and wrapping it inside one column would make the other look
           like a second page beside it. */}
@@ -440,6 +446,47 @@ function assigneeOptions(
   const options = assignees ?? []
   if (current === null || options.some((assignee) => assignee.id === current.id)) return options
   return [...options, current]
+}
+
+/**
+ * Says that the reply on this ticket was written from the knowledge base rather
+ * than by a colleague.
+ *
+ * **This is the only place the automation surfaces anywhere**, which is why it
+ * is worth more than a badge. The thread is deliberately silent: there is no
+ * footer, and the reply is signed by the support team, because the student is
+ * owed an answer rather than a disclaimer. So everything an agent needs to know
+ * about where it came from has to be said here, and all three parts of it are
+ * load-bearing - the reply was not written by a person, nobody reviewed it
+ * before it was stored, and the student has not actually received it, because
+ * nothing is emailed yet.
+ *
+ * On a ticket a student has replied to, the status is back to OPEN while
+ * `autoResolvedAt` stays set, and the notice then reads as history. That is
+ * correct: what it records is that a reply in the thread is not a colleague's,
+ * which stays true however the ticket moves afterwards.
+ */
+function AutoResolvedNotice({ at }: { at: string | null }) {
+  if (!at) return null
+
+  return (
+    <div
+      role="note"
+      aria-label="Answered from the knowledge base"
+      className="mb-6 rounded-md border border-border bg-muted/50 p-4 text-sm"
+    >
+      <p className="font-medium">
+        This ticket was answered from the knowledge base and resolved
+        automatically on{' '}
+        <time dateTime={at}>{formatDateTime(at)}</time>.
+      </p>
+      <p className="mt-1 text-muted-foreground">
+        The reply below was written from <code>knowledge-base.md</code> rather than by a
+        colleague, and no one reviewed it before it was saved. Nothing has been emailed to the
+        requester. Check that it answers the question, and reply again if it does not.
+      </p>
+    </div>
+  )
 }
 
 function MessageCard({ message }: { message: TicketMessage }) {

@@ -10,7 +10,7 @@ Technology decisions for the AI-powered ticket management system. See `project-s
 | Backend    | Node.js + Express + TypeScript                 |
 | Database   | PostgreSQL                                     |
 | ORM        | Prisma                                         |
-| AI         | Claude API (Anthropic); OpenAI `gpt-5-nano` via the Vercel AI SDK for the reply polisher |Create
+| AI         | Claude API (Anthropic); OpenAI `gpt-5-nano` via the Vercel AI SDK for everything built so far |
 | Email      | Mailgun by default, SendGrid adapter alongside  |
 | Auth       | Database-backed sessions                       |
 | Deployment | Docker containers on a cloud provider          |
@@ -166,40 +166,61 @@ Still outstanding: a scheduled task to delete expired sessions.
 ### The one exception: OpenAI for the AI that is built
 
 Every AI call in the system so far goes to OpenAI's `gpt-5-nano` through the
-**Vercel AI SDK** (`ai` + `@ai-sdk/openai`) rather than to Anthropic. Three of
-them:
+**Vercel AI SDK** (`ai` + `@ai-sdk/openai`) rather than to Anthropic. Four of
+them, and the fourth is a different kind of thing from the other three:
 
 - **Polish** - rewrites an agent's draft reply. On demand, stores nothing.
 - **Summarise** - summarises the ticket and its conversation. On demand, stores
   nothing.
 - **Automatic classification** - sets a new ticket's category when it arrives.
-  The only one that writes to the database, and the only one nobody asked for:
-  it is fired unawaited from the inbound-email path once the transaction has
-  committed, so the webhook never waits on a model.
+  Nobody asks for it: `services/inbound-email.ts` enqueues a `ticket.classify`
+  job inside the transaction that creates the ticket, and a pg-boss worker does
+  the model call a second or two later, so the webhook never waits on a model.
+- **Knowledge-base auto-resolution** - answers a new ticket from
+  `knowledge-base.md` and marks it RESOLVED, when the knowledge base definitively
+  covers what was asked. A second queued job alongside the classification, on the
+  same terms.
+
+**The fourth is the only one that writes a reply, and that makes it the only one
+whose output a student would read.** The first two produce text an agent reads
+and can discard; the third writes one enum column that an agent can correct on
+the detail page. This one stores an outbound `Message` in the support team's name
+and takes the ticket out of the queue, with no human in between - so the whole
+design is weighted towards declining: coverage decides rather than category,
+anything not covered stays OPEN, the knowledge base's own escalation rules are
+enforced in code as well as asked for in the prompt, and it is the one call that
+pays for `reasoningEffort: 'medium'`. It also turns `knowledge-base.md` from
+documentation into **server input**: its absence is the feature's off switch, and
+editing it changes what the system will tell a student.
 
 Why it is a deviation rather than a change of direction:
 
 - It was asked for as `gpt-5-nano` specifically, feature by feature. What is
-  left for Claude is the rest of Phase 5: the stored per-ticket summary and the
-  suggested reply drafted from the knowledge base, plus the `LlmCall` audit table
-  and prompt caching that neither provider's calls have yet.
+  left for Claude is the rest of Phase 5: the stored per-ticket summary and a
+  *suggested* reply an agent edits before sending - which is a near cousin of the
+  auto-resolver and should reuse its knowledge-base reader rather than growing a
+  second one - plus the `LlmCall` audit table and prompt caching that neither
+  provider's calls have yet. Prompt caching would pay off most on the
+  auto-resolver, whose prompt carries the same knowledge base on every call.
 - The AI SDK rather than `openai` directly, because it is a provider-agnostic
   client: moving these calls to Claude later is a one-line change in
   `server/src/lib/ai.ts`, with the services above it untouched. One model setting
-  (`OPENAI_MODEL`) serves both features rather than one each - the same kind of
-  work on the same size of input, and a knob per feature is a knob nobody sets.
+  (`OPENAI_MODEL`) serves all four features rather than one each - the same kind
+  of work on the same size of input, and a knob per feature is a knob nobody sets.
 - `OPENAI_API_KEY` is the only **optional** secret in `env.ts`. A deployment
   without one boots and works; the button answers 503 with a sentence the
   composer shows. Nothing else in the system depends on it.
-- The prompts carry a student's own words, so all three calls set
+- The prompts carry a student's own words, so all four calls set
   `store: false` - OpenAI is asked to retain nothing. That does not settle the
   open question below about third-party LLMs and student data; it is the least a
-  call can do while the question is open. The summary is the widest exposure: its
-  prompt is the whole conversation, where the polisher sends the last six messages
-  and the classifier only the subject and opening message. **Classification is the
-  one that happens without anybody asking** - every inbound email now reaches
-  OpenAI - which is the sharpest form that open question has taken, and the reason
-  `OPENAI_API_KEY` being unset has to remain a working configuration.
+  call can do while the question is open. The summary is the widest exposure per
+  call: its prompt is the whole conversation, where the polisher sends the last six
+  messages and the classifier and the auto-resolver only the subject and opening
+  message. **Two of the four happen without anybody asking** - every inbound email
+  now reaches OpenAI twice - which is the sharpest form that open question has
+  taken, and the reason `OPENAI_API_KEY` being unset has to remain a working
+  configuration. Neither queued call has a budget or a sampling rate, and both are
+  retried up to three times, so the worst case is multiplied rather than bounded.
 
 ## Email
 
@@ -257,8 +278,12 @@ and everything outbound.
 **The queue is pg-boss**, which keeps its jobs in the Postgres the application
 already uses. This settles what was an open decision here.
 
-- Queued work today: **classifying a new ticket**. Still to come: summarise,
-  draft reply, send outbound, expire sessions, nightly cleanup.
+- Queued work today: **classifying a new ticket** (`ticket.classify`) and
+  **answering it from the knowledge base** (`ticket.auto-resolve`), both enqueued
+  by the inbound path in the transaction that creates the ticket. Two jobs rather
+  than one doing both, because they are independent decisions that fail
+  independently. Still to come: summarise, draft reply, send outbound, expire
+  sessions, nightly cleanup.
 - Every unit of work is idempotent and has bounded retries with backoff -
   three attempts, exponential, recorded on the queue row in the database.
 
@@ -276,14 +301,17 @@ already uses. This settles what was an open decision here.
    pg-boss the transaction's own connection and the job commits with the ticket.
    No external broker can do that. It removes the window where a process commits
    a ticket and then dies before telling anyone to classify it - the gap that
-   otherwise needs a reconciliation sweep to close.
+   otherwise needs a reconciliation sweep to close. It also makes the retry safe:
+   `serializable()` re-runs its whole callback on a write conflict, and because the
+   job rows are written through `tx` they roll back with the ticket, so a retry
+   cannot leave duplicate jobs behind.
 
 pg-boss owns its own `pgboss` schema and migrates it itself on start. Nothing in
 `prisma/schema.prisma` describes those tables and `prisma migrate` knows nothing
 about them, which is the boundary that keeps the two migration systems from
 meeting.
 
-**Inbound email still converts inline**; only the classification is queued. The
+**Inbound email still converts inline**; only the two arrival jobs are queued. The
 seam for moving conversion itself is unchanged and still unused: every payload is
 stored as a `RawEmail` *before* conversion, and `processedAt IS NULL` is exactly
 the query a worker would claim from. A conversion that fails leaves the payload

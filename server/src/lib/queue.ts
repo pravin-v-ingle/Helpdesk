@@ -34,21 +34,30 @@ import { env } from "../env.ts";
  */
 export const QUEUES = {
   classifyTicket: "ticket.classify",
+  autoResolveTicket: "ticket.auto-resolve",
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
 
 /**
- * How a failed job is retried. These belong here rather than on each `send()`
- * because they are a property of the queue, not of one job, and because
- * `createQueue` records them in the database - so a worker started by a
- * different process inherits them without being told.
+ * How a failed job is retried. One policy for every queue: these belong here
+ * rather than on each `send()` because they are a property of the queue, not of
+ * one job, and because `createQueue` records them in the database - so a worker
+ * started by a different process inherits them without being told.
  *
  * Three attempts with exponential backoff suits what actually fails: a rate
  * limit, a timed-out provider, a model that returned something unparseable. All
  * three are worth trying again in a minute and none is worth trying forever.
- * `expireInSeconds` has to clear the service's own 20s model timeout with room
- * to spare, or pg-boss would reclaim a job that was still legitimately running.
+ * `expireInSeconds` has to clear the slowest service's own model timeout (30s,
+ * the auto-resolver's) with room to spare, or pg-boss would reclaim a job that
+ * was still legitimately running.
+ *
+ * Shared by both queues on purpose, including by `ticket.auto-resolve` - whose
+ * three attempts mean up to three paid model calls and three attempts at
+ * replying to a student. That is safe rather than careless because of the
+ * guarded `updateMany` in `services/auto-resolve-ticket.ts`: the second attempt
+ * finds the ticket already RESOLVED and writes nothing. If the cost ever
+ * matters, this is the constant to split into a `Record<QueueName, ...>`.
  */
 const QUEUE_OPTIONS = {
   retryLimit: 3,
@@ -58,10 +67,18 @@ const QUEUE_OPTIONS = {
 } as const;
 
 /**
- * How long a graceful stop waits for jobs in flight. Longer than the classifier's
- * own 20s model timeout, so a shutdown does not abandon the job it is waiting
- * for; short enough that a container orchestrator's own kill deadline (usually
- * 30s) is not what ends the process.
+ * How long a graceful stop waits for jobs in flight. Longer than the
+ * classifier's own 20s model timeout, so a shutdown does not abandon the job it
+ * is waiting for; short enough that a container orchestrator's own kill deadline
+ * (usually 30s) is not what ends the process.
+ *
+ * It does *not* clear the auto-resolver's 30s timeout, and that is the deliberate
+ * side of the trade: an auto-resolution still mid-call when the process stops is
+ * cut short, which loses nothing. Nothing is written until the model has
+ * answered, so the job is simply never completed and pg-boss hands it to whoever
+ * starts next once it expires. Raising this to cover it would instead put the
+ * orchestrator's kill in charge of shutdown, which loses the classifications
+ * this timeout exists to protect.
  */
 const STOP_TIMEOUT_MS = 25_000;
 
@@ -85,7 +102,9 @@ let boss: PgBoss | undefined;
  */
 export async function startQueue(): Promise<void> {
   if (!env.queue.enabled) {
-    console.log("Job queue disabled (QUEUE_ENABLED=false); nothing will be classified.");
+    console.log(
+      "Job queue disabled (QUEUE_ENABLED=false); nothing will be classified or auto-resolved.",
+    );
     return;
   }
   if (boss) return;

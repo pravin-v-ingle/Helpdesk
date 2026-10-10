@@ -184,6 +184,11 @@ model Ticket {
   /// When the newest message on this ticket arrived. The list view's sort key,
   /// kept denormalised so ordering a page does not join the thread.
   lastMessageAt  DateTime        @default(now())
+  /// Set when the knowledge-base auto-resolver answered this ticket and resolved
+  /// it. Null for every ticket a human or nothing at all resolved. The only
+  /// record that a reply was not written by a person - deliberately, because the
+  /// reply itself says nothing about it.
+  autoResolvedAt DateTime?
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
   messages       Message[]
@@ -203,6 +208,7 @@ model Ticket {
   /// the table passes roughly 100k rows.
   @@index([status, lastMessageAt])
   @@index([category, lastMessageAt])
+  @@index([autoResolvedAt, lastMessageAt])
   @@index([lastMessageAt])
   @@index([requesterEmail])
   @@index([assignedToId])

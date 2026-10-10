@@ -1,0 +1,580 @@
+{
+  "generatedAt": "2026-10-08",
+  "note": "Captured from the development database. See prisma/seed-tickets.ts for how it is loaded and why the ids are not part of it.",
+  "tickets": [
+    {
+      "subject": "Help with my enrolment",
+      "body": "",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": null,
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-10-07T03:29:25.163Z",
+      "createdAt": "2026-09-29T04:49:54.106Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Hello,\n\nI cannot see my enrolment for next term. Could you check?\n\nThanks,\nAda",
+          "bodyHtml": null,
+          "rfcMessageId": null,
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-09-29T04:49:54.115Z"
+        },
+        {
+          "direction": "OUTBOUND",
+          "fromEmail": "admin@example.com",
+          "fromName": "Admin",
+          "body": "asad adaad adadad",
+          "bodyHtml": null,
+          "rfcMessageId": null,
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-07T03:29:25.163Z"
+        }
+      ]
+    },
+    {
+      "subject": "Help with my enrolment",
+      "body": "",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": null,
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-09-29T04:50:04.618Z",
+      "createdAt": "2026-09-29T04:50:04.615Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Any update?",
+          "bodyHtml": null,
+          "rfcMessageId": null,
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-09-29T04:50:04.618Z"
+        }
+      ]
+    },
+    {
+      "subject": "Cannot log in",
+      "body": "",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": null,
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-09-29T04:51:03.085Z",
+      "createdAt": "2026-09-29T04:51:03.081Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Hello,\n\nI cannot see my enrolment for next term. Could you check?\n\nThanks,\nAda",
+          "bodyHtml": null,
+          "rfcMessageId": null,
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-09-29T04:51:03.085Z"
+        }
+      ]
+    },
+    {
+      "subject": "Re: Cannot log in",
+      "body": "",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": null,
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-09-29T04:51:04.107Z",
+      "createdAt": "2026-09-29T04:51:04.104Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Still stuck.",
+          "bodyHtml": null,
+          "rfcMessageId": null,
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-09-29T04:51:04.107Z"
+        }
+      ]
+    },
+    {
+      "subject": "Out of office",
+      "body": "",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": null,
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-09-29T04:51:04.556Z",
+      "createdAt": "2026-09-29T04:51:04.554Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Hello,\n\nI cannot see my enrolment for next term. Could you check?\n\nThanks,\nAda",
+          "bodyHtml": null,
+          "rfcMessageId": null,
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-09-29T04:51:04.556Z"
+        }
+      ]
+    },
+    {
+      "subject": "Printer broken",
+      "body": "",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": null,
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-10-01T03:53:05.060Z",
+      "createdAt": "2026-10-01T03:48:27.824Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Hello,\n\nI cannot see my enrolment for next term. Could you check?\n\nThanks,\nAda",
+          "bodyHtml": null,
+          "rfcMessageId": "t3-first@example.com",
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-01T03:48:27.832Z"
+        },
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Any news?",
+          "bodyHtml": null,
+          "rfcMessageId": "t3-reply@example.com",
+          "inReplyTo": "t3-first@example.com",
+          "references": "t3-first@example.com",
+          "createdAt": "2026-10-01T03:48:28.306Z"
+        },
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Hello again",
+          "bodyHtml": null,
+          "rfcMessageId": "t3-reply2@example.com",
+          "inReplyTo": "t3-first@example.com",
+          "references": "t3-first@example.com",
+          "createdAt": "2026-10-01T03:53:05.060Z"
+        }
+      ]
+    },
+    {
+      "subject": "Fees question",
+      "body": "Hi, what are the late fees?",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": null,
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-10-01T03:50:22.894Z",
+      "createdAt": "2026-10-01T03:50:22.884Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Hi, what are the late fees?",
+          "bodyHtml": null,
+          "rfcMessageId": "t4-first@example.com",
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-01T03:50:22.894Z"
+        }
+      ]
+    },
+    {
+      "subject": "qasde asaadw",
+      "body": "aadad adadad adadadada adadad",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": "GENERAL_QUESTION",
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-10-04T06:32:19.677Z",
+      "createdAt": "2026-10-01T19:30:01.030Z",
+      "assigneeEmail": "agent@helpdesk.local",
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Hello,\n\nI cannot see my enrolment for next term. Could you check?\n\nThanks,\nAda",
+          "bodyHtml": null,
+          "rfcMessageId": "7e42f84ce516c4a3@example.com",
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-01T19:30:01.039Z"
+        },
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Hello,\n\nI cannot see my enrolment for next term. Could you check?\n\nThanks,\nAda",
+          "bodyHtml": null,
+          "rfcMessageId": "ab0a320d3b4ab83d@example.com",
+          "inReplyTo": "7e42f84ce516c4a3@example.com",
+          "references": "7e42f84ce516c4a3@example.com",
+          "createdAt": "2026-10-01T19:30:45.445Z"
+        },
+        {
+          "direction": "OUTBOUND",
+          "fromEmail": "admin@example.com",
+          "fromName": "Admin",
+          "body": "hello 1",
+          "bodyHtml": null,
+          "rfcMessageId": null,
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-04T06:32:03.375Z"
+        },
+        {
+          "direction": "OUTBOUND",
+          "fromEmail": "admin@example.com",
+          "fromName": "Admin",
+          "body": "hello 2",
+          "bodyHtml": null,
+          "rfcMessageId": null,
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-04T06:32:19.677Z"
+        }
+      ]
+    },
+    {
+      "subject": "Order check B",
+      "body": "Hello,\n\nI cannot see my enrolment for next term. Could you check?\n\nThanks,\nAda",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": null,
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-10-01T19:30:01.534Z",
+      "createdAt": "2026-10-01T19:30:01.531Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Hello,\n\nI cannot see my enrolment for next term. Could you check?\n\nThanks,\nAda",
+          "bodyHtml": null,
+          "rfcMessageId": "911af1b4eb762f1b@example.com",
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-01T19:30:01.534Z"
+        }
+      ]
+    },
+    {
+      "subject": "Order check C",
+      "body": "Hello,\n\nI cannot see my enrolment for next term. Could you check?\n\nThanks,\nAda",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": null,
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-10-01T19:30:01.987Z",
+      "createdAt": "2026-10-01T19:30:01.985Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Hello,\n\nI cannot see my enrolment for next term. Could you check?\n\nThanks,\nAda",
+          "bodyHtml": null,
+          "rfcMessageId": "f67a04af9f7005fe@example.com",
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-01T19:30:01.987Z"
+        }
+      ]
+    },
+    {
+      "subject": "Help with my enrolment",
+      "body": "Hello,\n\nI cannot see my enrolment for next term. Could you check?\n\nThanks,\nAda",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": null,
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-10-04T06:27:37.875Z",
+      "createdAt": "2026-10-04T06:27:29.944Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Hello,\n\nI cannot see my enrolment for next term. Could you check?\n\nThanks,\nAda",
+          "bodyHtml": null,
+          "rfcMessageId": "smoke-reply-1@example.com",
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-04T06:27:29.954Z"
+        },
+        {
+          "direction": "OUTBOUND",
+          "fromEmail": "admin@example.com",
+          "fromName": "Admin",
+          "body": "Thanks for writing in. Your enrolment is fixed.",
+          "bodyHtml": null,
+          "rfcMessageId": null,
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-04T06:27:37.875Z"
+        }
+      ]
+    },
+    {
+      "subject": "I want a refund for the Python course",
+      "body": "I paid twice for the Python bootcamp and I want my money back please. Can you refund one of the charges?",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": "REFUND_REQUEST",
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-10-07T04:04:28.417Z",
+      "createdAt": "2026-10-07T04:03:35.590Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "I paid twice for the Python bootcamp and I want my money back please. Can you refund one of the charges?",
+          "bodyHtml": null,
+          "rfcMessageId": "classify-test-1791345814@example.com",
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-07T04:03:35.611Z"
+        },
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Also the video player is broken and shows an error on every lesson.",
+          "bodyHtml": null,
+          "rfcMessageId": "ab3edc1b0160bcf6@example.com",
+          "inReplyTo": "classify-test-1791345814@example.com",
+          "references": "classify-test-1791345814@example.com",
+          "createdAt": "2026-10-07T04:04:28.417Z"
+        }
+      ]
+    },
+    {
+      "subject": "Video player shows an error",
+      "body": "Every time I open lesson 4 the player shows ERR_CONTENT_DECODING_FAILED and nothing plays. I have tried Chrome and Firefox.",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": "TECHNICAL_QUESTION",
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-10-07T04:04:04.941Z",
+      "createdAt": "2026-10-07T04:04:04.934Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Every time I open lesson 4 the player shows ERR_CONTENT_DECODING_FAILED and nothing plays. I have tried Chrome and Firefox.",
+          "bodyHtml": null,
+          "rfcMessageId": "classify-tech-1791345843@example.com",
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-07T04:04:04.941Z"
+        }
+      ]
+    },
+    {
+      "subject": "Question about Postgres indexes in module 3",
+      "body": "Hi, I am working through module 3 and I am not sure when to use a composite index versus two separate indexes in Postgres. The lecture mentioned both but I could not follow which one is better for a WHERE clause with two columns. Could someone explain? Thanks, Ada",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": "GENERAL_QUESTION",
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-10-07T04:11:42.310Z",
+      "createdAt": "2026-10-07T04:11:42.304Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Hi, I am working through module 3 and I am not sure when to use a composite index versus two separate indexes in Postgres. The lecture mentioned both but I could not follow which one is better for a WHERE clause with two columns. Could someone explain? Thanks, Ada",
+          "bodyHtml": null,
+          "rfcMessageId": "postgres-q-1791346301@example.com",
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-07T04:11:42.310Z"
+        }
+      ]
+    },
+    {
+      "subject": "Course videos keep buffering",
+      "body": "Hello, the course video links buffer every minute or two and I have to keep pausing and waiting for them to catch up. It happens on all of the module 4 lessons. My internet is fine for everything else. Is there something wrong with the player? Thanks, Ada",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": "TECHNICAL_QUESTION",
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-10-07T04:14:22.533Z",
+      "createdAt": "2026-10-07T04:14:22.528Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Hello, the course video links buffer every minute or two and I have to keep pausing and waiting for them to catch up. It happens on all of the module 4 lessons. My internet is fine for everything else. Is there something wrong with the player? Thanks, Ada",
+          "bodyHtml": null,
+          "rfcMessageId": "buffering-q-1791346461@example.com",
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-07T04:14:22.533Z"
+        }
+      ]
+    },
+    {
+      "subject": "Can I get a refund for the data engineering course?",
+      "body": "Hi, I signed up for the data engineering course three weeks ago but I have had to stop because of work. I have only watched the first two lessons. Can I have my money back for it, or is it too late now? I paid 249 on the 14th. Thanks, Ada",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": "REFUND_REQUEST",
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-10-07T04:17:09.947Z",
+      "createdAt": "2026-10-07T04:17:09.940Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Hi, I signed up for the data engineering course three weeks ago but I have had to stop because of work. I have only watched the first two lessons. Can I have my money back for it, or is it too late now? I paid 249 on the 14th. Thanks, Ada",
+          "bodyHtml": null,
+          "rfcMessageId": "refund-q-1791346629@example.com",
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-07T04:17:09.947Z"
+        }
+      ]
+    },
+    {
+      "subject": "zxqw plorbit",
+      "body": "asdkjh qwe mnbvc zzz plorbit frungle wimble 8347 ;;; kkk tttt navvy blork blork snorf. qqq",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": "GENERAL_QUESTION",
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-10-07T04:19:03.153Z",
+      "createdAt": "2026-10-07T04:19:03.146Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "asdkjh qwe mnbvc zzz plorbit frungle wimble 8347 ;;; kkk tttt navvy blork blork snorf. qqq",
+          "bodyHtml": null,
+          "rfcMessageId": "gibberish-1791346742@example.com",
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-07T04:19:03.153Z"
+        }
+      ]
+    },
+    {
+      "subject": "My login keeps failing with a 500 error",
+      "body": "Hi, every time I try to sign in to the portal I get a 500 error page. I have tried resetting my password twice and clearing my cache. Nothing works. Can you look at my account? Thanks, Ada",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": "TECHNICAL_QUESTION",
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-10-08T04:32:15.125Z",
+      "createdAt": "2026-10-08T04:31:49.005Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Hi, every time I try to sign in to the portal I get a 500 error page. I have tried resetting my password twice and clearing my cache. Nothing works. Can you look at my account? Thanks, Ada",
+          "bodyHtml": null,
+          "rfcMessageId": "pgboss-test-1791433908@example.com",
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-08T04:31:49.027Z"
+        },
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Actually I would like a refund instead please.",
+          "bodyHtml": null,
+          "rfcMessageId": "de841061da9ee9b3@example.com",
+          "inReplyTo": "pgboss-test-1791433908@example.com",
+          "references": "pgboss-test-1791433908@example.com",
+          "createdAt": "2026-10-08T04:32:15.125Z"
+        }
+      ]
+    },
+    {
+      "subject": "When do I get my certificate?",
+      "body": "Hello, I finished the last module of the web development course on Friday and submitted the final project. How long does it usually take for the certificate to come through, and will it be emailed to me or do I download it from the portal? Thanks, Ada",
+      "bodyHtml": "",
+      "status": "OPEN",
+      "category": "GENERAL_QUESTION",
+      "requesterEmail": "ada@example.com",
+      "requesterName": "Ada Lovelace",
+      "lastMessageAt": "2026-10-08T13:08:39.042Z",
+      "createdAt": "2026-10-08T13:08:39.021Z",
+      "assigneeEmail": null,
+      "messages": [
+        {
+          "direction": "INBOUND",
+          "fromEmail": "ada@example.com",
+          "fromName": "Ada Lovelace",
+          "body": "Hello, I finished the last module of the web development course on Friday and submitted the final project. How long does it usually take for the certificate to come through, and will it be emailed to me or do I download it from the portal? Thanks, Ada",
+          "bodyHtml": null,
+          "rfcMessageId": "general-q-1791464918@example.com",
+          "inReplyTo": null,
+          "references": null,
+          "createdAt": "2026-10-08T13:08:39.042Z"
+        }
+      ]
+    }
+  ]
+}

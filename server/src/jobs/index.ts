@@ -11,6 +11,7 @@
  * into any process that only wanted to send.
  */
 import { env } from "../env.ts";
+import { registerAutoResolveTicketWorker } from "./auto-resolve-ticket.job.ts";
 import { registerClassifyTicketWorker } from "./classify-ticket.job.ts";
 
 /**
@@ -28,5 +29,6 @@ export async function startWorkers(): Promise<void> {
   }
 
   await registerClassifyTicketWorker();
+  await registerAutoResolveTicketWorker();
   console.log("Job workers registered.");
 }

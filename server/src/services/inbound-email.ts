@@ -15,6 +15,7 @@ import { prisma } from "../lib/prisma.ts";
 import { serializable } from "../lib/transaction.ts";
 import type { InboundEmail } from "../lib/email/inbound-email.ts";
 import { enqueueInTransaction, QUEUES } from "../lib/queue.ts";
+import type { AutoResolveTicketJob } from "../jobs/auto-resolve-ticket.job.ts";
 import type { ClassifyTicketJob } from "../jobs/classify-ticket.job.ts";
 
 export type IngestResult = {
@@ -164,32 +165,50 @@ async function convert(rawEmailId: number, email: InboundEmail): Promise<IngestR
             // inbound mail names no one to give the ticket to. `category` starts
             // null too and is filled in by the classification job queued below,
             // a second or two after this commits - so a ticket is briefly
-            // uncategorised by design, and stays that way if the job fails.
+            // uncategorised by design, and stays that way if the job fails. The
+            // same goes for `autoResolvedAt`: the auto-resolve job queued
+            // alongside it may answer this ticket from the knowledge base and
+            // resolve it, or - far more often - leave it exactly as created.
           },
           select: { id: true },
         })
       ).id;
 
-    // --- classification, queued in this very transaction ---------------------
-    // A new ticket needs a category, which takes a model call of a second or two
-    // - so it goes on the pg-boss queue and a worker does it. The webhook answers
-    // the provider in the meantime.
+    // --- the two arrival jobs, queued in this very transaction ---------------
+    // A new ticket needs two things done to it, each a model call of a second or
+    // two: a category, and a look at whether the knowledge base answers it
+    // outright. Both go on the pg-boss queue and workers do them. The webhook
+    // answers the provider in the meantime.
+    //
+    // **Two jobs, not one doing both.** They are independent decisions that fail
+    // independently: a provider timeout while writing a reply must not cost the
+    // ticket its category, and vice versa. Each earns its own retries.
     //
     // **Enqueued inside the transaction, not after it.** pg-boss keeps its jobs in
-    // this same Postgres, so `enqueueInTransaction` writes the job row through
-    // `tx`: the ticket and the instruction to classify it commit together or not
-    // at all. There is no window in which a process commits a ticket and then dies
+    // this same Postgres, so `enqueueInTransaction` writes both job rows through
+    // `tx`: the ticket and the instructions about it commit together or not at
+    // all. There is no window in which a process commits a ticket and then dies
     // before anyone is told to look at it. See `lib/queue.ts` for why a failure
     // here is deliberately left to abort the transaction - the payload is already
     // stored, so the provider's retry resumes from it.
     //
-    // Only a new ticket, and only once. A reply arriving on an existing thread
-    // does not re-classify it: the category is what the ticket is *about*, settled
+    // **A serializable retry cannot duplicate them**, which is worth saying
+    // because it looks like it should. `serializable()` re-runs this whole
+    // callback on a write conflict, but the job rows are not special - they are
+    // rows written through `tx`, so the aborted attempt rolls them back along
+    // with the ticket, and the retry writes two fresh ones.
+    //
+    // Only a new ticket, and only once, for both. A reply arriving on an existing
+    // thread re-runs neither: the category is what the ticket is *about*, settled
     // by the opening message, and an agent may have corrected it since - so
     // re-running on every message would quietly overwrite their correction with a
-    // machine's guess at a follow-up that says "thanks, any update?".
+    // machine's guess at a follow-up that says "thanks, any update?". The same
+    // reasoning is sharper still for the auto-resolver, which answers from
+    // `Ticket.body` - the opening message - and so would answer the first
+    // question as though the conversation after it had not happened.
     if (parentTicketId === null) {
       await enqueueInTransaction<ClassifyTicketJob>(tx, QUEUES.classifyTicket, { ticketId });
+      await enqueueInTransaction<AutoResolveTicketJob>(tx, QUEUES.autoResolveTicket, { ticketId });
     }
 
     // A reply to a ticket someone had finished with belongs back in the queue.
@@ -248,7 +267,7 @@ async function convert(rawEmailId: number, email: InboundEmail): Promise<IngestR
         });
         // The same mail by two routes, or a retry overtaking the first attempt.
         // Its ticket already exists and whichever attempt created it already
-        // queued the classification, so this one queues nothing.
+        // queued both arrival jobs, so this one queues nothing.
         return { rawEmailId, ticketId: existing.ticketId, duplicate: true };
       }
     }

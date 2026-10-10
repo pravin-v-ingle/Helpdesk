@@ -46,19 +46,23 @@ has no build or transpile step.
 - AI: Claude API via `@anthropic-ai/sdk`, default model `claude-opus-5` (not yet
   added). **Everything actually built goes to OpenAI `gpt-5-nano` through the
   Vercel AI SDK** (`ai` + `@ai-sdk/openai`): the reply polisher, the ticket
-  summariser, and the automatic classifier that categorises a new ticket as it
-  arrives - see Polishing a draft reply, Summarising a ticket and Classifying a
-  ticket automatically below, and `tech-stack.md` for why the deviation stands.
-  One `OPENAI_MODEL` serves all three, and `OPENAI_API_KEY` is the one optional
-  secret in `env.ts` - **unset has to keep working**, which is how the e2e stack
-  runs.
+  summariser, the automatic classifier that categorises a new ticket as it
+  arrives, and the auto-resolver that answers one from `knowledge-base.md` when
+  the knowledge base covers it - see Polishing a draft reply, Summarising a
+  ticket, Classifying a ticket automatically and Auto-resolving a ticket below,
+  and `tech-stack.md` for why the deviation stands. One `OPENAI_MODEL` serves all
+  four, and `OPENAI_API_KEY` is the one optional secret in `env.ts` - **unset has
+  to keep working**, which is how the e2e stack runs. The auto-resolver is the
+  only one of the four that writes a reply, and `knowledge-base.md` at the
+  repository root is therefore server input rather than documentation.
 - Email: provider-agnostic inbound, one adapter per provider (`server/src/lib/email/`),
   chosen by `INBOUND_EMAIL_PROVIDER`; Mailgun is the default because SendGrid
   Inbound Parse has no signature mechanism. Outbound send not yet added.
 - Jobs: **pg-boss** in the application's own Postgres (`lib/queue.ts`), its own
-  `pgboss` schema which it migrates itself. Classification is the only queued
-  work so far; `QUEUE_ENABLED` and `RUN_WORKERS` control it and both default on
-  (see Background jobs)
+  `pgboss` schema which it migrates itself. Two queues so far, both enqueued by
+  the inbound path when a ticket arrives: `ticket.classify` and
+  `ticket.auto-resolve`. `QUEUE_ENABLED` and `RUN_WORKERS` control them and both
+  default on (see Background jobs)
 - Testing: Playwright end-to-end in `e2e/`, Chromium only, against a separate
   `helpdesk_test` database; Vitest + React Testing Library on jsdom for
   client component tests, and **`bun test`** for server unit tests - Bun's own
@@ -82,6 +86,7 @@ Run from the repository root:
 | `bun run test:unit:server` | The server unit tests only |
 | `bun run test:e2e` | Run the Playwright end-to-end tests (see Testing) |
 | `cd server && bun run email:test` | POST a signed, provider-shaped email to the inbound webhook (see Tickets and inbound email) |
+| `cd server && bun run db:seed:tickets` | Load the sample tickets in `prisma/seed-tickets.json`; refuses a database that already holds tickets (see Seeding sample tickets) |
 
 Run `bun run typecheck` and `bun run test:unit` before considering a change
 complete. `bun test` does **not** typecheck, so a test file that has drifted from
@@ -119,12 +124,15 @@ client/          React app
 server/          Express API
   src/
     routes/      Express routers, thin
-    jobs/        pg-boss worker handlers (one per queue) and their registration
+    jobs/        pg-boss worker handlers (one per queue - classify-ticket,
+                 auto-resolve-ticket) and their registration
     services/    business logic
     middleware/  error handling, auth
     lib/         clients and shared setup, parseBody() for shared schemas,
                  serializable() in transaction.ts
       queue.ts   pg-boss: lifecycle, queue names, transactional enqueue
+      knowledge-base.ts  reads `knowledge-base.md` once; null disables
+                 auto-resolution
       email/     inbound provider adapters: the InboundEmail contract
                  (inbound-email.ts), the registry (providers.ts), mailgun.ts,
                  sendgrid.ts, and the shared parsing bits - multipart.ts,
@@ -133,6 +141,8 @@ server/          Express API
     index.ts     entry point - starts the queue, then listens
     worker.ts    entry point for the workers alone, with no HTTP server
     env.ts       environment configuration
+  prisma/        schema.prisma, migrations, seed.ts (the initial admin),
+                 seed-tickets.ts + seed-tickets.json (the sample tickets)
   scripts/       reset-test-db.ts - resets the e2e database;
                  send-test-email.ts - signs and POSTs a test inbound email
   .env.test      committed settings for the e2e API (test ports, test admin)
@@ -810,8 +820,11 @@ untrusted sender markup and nothing on the client sanitises it, and `body` and
 `assignedToId` are not on the list view.
 
 `GET /api/tickets/:id` returns `{ ticket }` - the same row the list returns plus
-`assignedTo` (`{ id, name, email }` or null) and `messages`, **oldest first**,
-each `{ id, direction, fromEmail, fromName, body, createdAt }`. Same auth as the
+`autoResolvedAt`, `assignedTo` (`{ id, name, email }` or null) and `messages`,
+**oldest first**, each `{ id, direction, fromEmail, fromName, body, createdAt }`.
+`autoResolvedAt` is on this shape and **not** on the list's: the list neither
+filters on it nor shows it, so a list row carrying it would be a field no page
+reads - the rule the two columns below already follow. Same auth as the
 list: `requireAuth`, no role check, no ownership check. Two columns still stay
 behind. `Ticket.body` is the first message denormalised, so the thread already
 carries it, and the list's rule holds here too - a field no page reads quietly
@@ -1152,6 +1165,237 @@ picks a ticket up must be able to be the one holding it. Deleted accounts are
 covered by the same `active: true` filter, because a deleted row always carries
 `active: false`.
 
+### Auto-resolving a ticket
+
+A new ticket is also **answered and resolved** when `knowledge-base.md`
+definitively covers what was asked. No endpoint and no button:
+`services/auto-resolve-ticket.ts` is called from a pg-boss worker off a job the
+inbound path enqueues, exactly as the classifier is, and that is the whole
+interface.
+
+This is the first thing in the system that **answers a student rather than
+describing one to an agent**. The polisher rewrites what an agent typed, the
+summariser tells an agent what a thread says, the classifier files a ticket - all
+three produce text a human reads and can discard. This one writes an outbound
+`Message` in the support team's name and sets `status: RESOLVED`, with nobody in
+between. Every decision below follows from that.
+
+**Coverage decides, not category.** If the knowledge base clearly and completely
+answers the question, reply and resolve; anything it does not cover stays OPEN for
+a human. A `REFUND_REQUEST` about the refund *policy* is answerable; a
+`GENERAL_QUESTION` about the 2027 curriculum is not. The category is not consulted
+at all.
+
+Six things it deliberately does:
+
+- **RESOLVED, never CLOSED.** Closing is a judgement only a person makes. RESOLVED
+  is also the safe end state because a student's reply reopens it by the ordinary
+  inbound rule - so a wrong auto-answer costs one round trip rather than a lost
+  ticket.
+- **Nothing in the thread mentions AI or automation.** No footer, no disclaimer,
+  and `fromName` is `"Code with Mosh Support Team"` rather than a robot's name.
+  `Ticket.autoResolvedAt` is the *only* record, and the detail page's notice is the
+  only place it surfaces - which is the right place, because the person who needs
+  to know is the agent, not the student. `fromEmail` is `env.supportEmailAddress`,
+  falling back to `support@localhost`, since `SUPPORT_EMAIL_ADDRESS` is optional
+  and unset on most dev machines; a visibly local placeholder beats a
+  plausible-looking invented address.
+- **No feature flag.** It runs when `lib/knowledge-base.ts` finds a knowledge base
+  **and** `OPENAI_API_KEY` is set. Two conditions each independently necessary
+  beat a boolean that can disagree with both, and a missing knowledge base is the
+  honest off switch: a model asked to answer policy questions from nothing is a
+  model inventing policy, in the support team's name, on a ticket nobody reviews.
+  `MIN_LENGTH = 200` catches a stub file. The read is **cached for the life of the
+  process**, so editing `knowledge-base.md` needs a restart.
+- **No list filtering and no hiding.** The queue shows every ticket. Status does
+  the work, so an auto-answered ticket falls out of an "Open" filter exactly as a
+  human-resolved one does, and `autoResolvedAt` is on `ticketDetailSelect` only -
+  the list neither filters on it nor shows it, so putting it on a list row would
+  make it a field no page reads, the rule `body` and `assignedToId` already follow.
+- **Only a new ticket, and only once**, like classification. `messages.length !== 1`
+  is a refusal, checked again in the service because a reply can land between the
+  enqueue and the worker: the prompt is built from `Ticket.body`, the *opening*
+  message, so on a conversation that has moved on this would answer the first
+  question as though nothing had been said since.
+- **Nothing is emailed**, so `rfcMessageId` stays null - the same rule an agent's
+  own reply follows.
+
+**Section 10 of the knowledge base is enforced in code, not only asked for in the
+prompt**, and the shape of that is the subtlest thing in the file. The prompt
+carries those rules verbatim *and* a phrase list overrules the model whatever it
+decided. Crude matching is acceptable only because of the direction it fails in: a
+phrase list can only ever escalate **more** tickets, never auto-resolve more.
+
+- `ESCALATION_PHRASES` is checked against the incoming **subject + body**: legal
+  threats, disputes and chargebacks, account security, **and explicit requests for
+  money back**. The last group is there because the system knows neither the
+  purchase date nor how much of the course was watched, so it cannot establish
+  that a refund is *inside* the 30-day window - and section 10 says to escalate
+  when it is outside. Unable to tell is not the same as inside. Note what is
+  deliberately *absent*: a bare `refund`. "What is your refund policy?" is a
+  section 4 question with a complete answer, and escalating it would be the
+  "money always escalates" rule this feature does not follow.
+- `REPLY_ESCALATION_PHRASES` is checked against the **model's own reply** and is
+  deliberately **narrower** - legal, dispute and security only, with the money
+  phrases dropped. **The trap this avoids:** `knowledge-base.md` line 65 reads
+  "30-day **money-back** guarantee", which is the correct section 4 answer.
+  Checking the money phrases against the reply would self-escalate exactly the
+  case this feature is best at, and the symptom would read as a prompt problem
+  rather than a list problem.
+- Matching is **word-bounded**, not `String.includes`, and that is load-bearing
+  rather than fastidious: `sue` is inside `issue`, and `issue` is inside most
+  technical tickets, so a substring check would escalate nearly every section 7
+  question the knowledge base answers best.
+- One section 10 rule is not a phrase and never will be: "the system confidence
+  score is low" is `canAnswer: false` and the guards below.
+
+**Asking the model.** One call, `Output.object` from the `ai` package rather than
+the classifier's `Output.choice` - note the wire shape differs, and `test/fakes.ts`
+has a helper for each: `Output.choice` wraps its answer in `{ result }` and
+`Output.object` is the bare object, so `result.output` is the typed object
+directly. The schema is `{ canAnswer: boolean, reply: string }`, both **required**,
+because `@ai-sdk/openai` sends it as a *strict* JSON schema: an `.optional()`, a
+default or a string length rule would be refused by the provider at runtime rather
+than by the typechecker. So `reply` is `""` when there is nothing to say, and its
+length is checked in code. A malformed answer throws inside the SDK, which is
+transient and earns the job its retry.
+
+The prompt makes **declining the default** by saying the asymmetry out loud:
+answering sends text to a student signed by the support team with nobody reading
+it first, and declining costs one agent one ticket they would have read anyway.
+It also names the gaps the knowledge base has - anything needing this student's
+account, order, payment or progress is `canAnswer: false` - which matters because
+a large share of real tickets are exactly that. The knowledge base goes in the
+**user** prompt, fenced, rather than the instructions: the system message is about
+how to behave, and keeping the document out of it is also what would let prompt
+caching (5.8) help here later.
+
+Call options: `reasoningEffort: 'medium'` - higher than the other three features'
+`'low'`, because this call decides whether a ticket leaves the queue and that
+judgement is the kind cheap reasoning gets wrong expensively.
+`maxOutputTokens: 4_000`, generous because the budget is shared with reasoning
+tokens and this is the one call that reasons *and* writes prose.
+`TIMEOUT_MS = 30_000`, and note it exceeds `STOP_TIMEOUT_MS` (25s) in
+`lib/queue.ts`: a graceful shutdown can cut this call short, which loses nothing,
+because nothing is written until the model has answered and the job is simply
+never completed. `store: false`, as everywhere.
+
+**Guards on the answer, before it is written.** The ticket stays OPEN - return
+`null`, log why - if `canAnswer` is false, the reply trims under 40 characters (a
+model that decided to answer and then acknowledged is worse than silence, because
+the ticket leaves the queue), the reply trips `REPLY_ESCALATION_PHRASES`, or it
+exceeds `MAX_REPLY_LENGTH` - the `10_000` imported from
+`@helpdesk/core/schemas/tickets` rather than a second number, so a stored reply is
+always one an agent could have typed.
+
+**The write is one `serializable()` transaction, and the order of its two
+statements is the important thing.** The status write goes first:
+
+```ts
+tx.ticket.updateMany({
+  where: { id, status: OPEN, autoResolvedAt: null },
+  data: { status: RESOLVED, autoResolvedAt: new Date() },
+})
+```
+
+and its `count` decides whether `addMessage` is called at all. The model call took
+seconds and an agent may have resolved, closed or replied in them. **Reverse the
+two and a lost race leaves an outbound reply from the support team on a ticket the
+agent is working, with nothing anywhere to say where it came from** - the worst
+outcome this feature could have. A lost race returns `null` rather than throwing:
+it is permanent, and throwing would spend two more model calls losing it twice
+more.
+
+The reply is written through `addMessage` (`services/inbound-email.ts`), the
+inbound path's own helper, which moves `lastMessageAt` with the message - an
+auto-reply is activity, and a reply that did not move it would be invisible to the
+queue's default ordering.
+
+**The error contract is the classifier's**, for the classifier's reasons: a
+transient failure throws so pg-boss retries, and a permanent outcome returns
+`null`. The refusals that cost nothing are all checked **before** the model: no
+knowledge base, no `OPENAI_API_KEY`, no such ticket, `status !== OPEN`,
+`autoResolvedAt !== null`, `messages.length !== 1`, an empty body, an escalation
+phrase. `jobs/auto-resolve-ticket.job.ts` is the handler and does nothing but
+validate the payload and call the service, with **`CONCURRENCY = 1`** against the
+classifier's 2 - this is the most expensive call here and the only one that closes
+a ticket.
+
+**On the client**, `AutoResolvedNotice` in `TicketDetailPage.tsx` renders **above
+the `<h1>`** in `TicketView`, not in the Details card: it is not another property
+of the ticket, it changes how the rest of the page should be read, and an agent who
+scrolls straight to the composer has still seen it. It says three things, each one
+an agent would otherwise assume wrong: the reply was written from the knowledge
+base rather than by a colleague, nobody reviewed it, and nothing was emailed to the
+requester. **It is the only place the automation surfaces anywhere**, which is the
+whole reason it is a notice rather than a badge. On a ticket a student has replied
+to, the status is back to OPEN while `autoResolvedAt` stays set and the notice
+reads as history - which is correct: what it records is that a reply in the thread
+is not a colleague's, and that stays true however the ticket moves afterwards.
+
+**Live verification**, 2026-10-10, against the real model: "Videos are not playing"
+resolved with a grounded section 7 answer; "What is your refund policy?" resolved
+quoting the money-back guarantee *without* self-escalating, which is the asymmetry
+working; "I want a refund for the course I bought last week" stayed OPEN; a
+certificates question that mentioned a lawyer stayed OPEN even though section 5
+answers it; a question about the 2027 curriculum stayed OPEN as uncovered. Neither
+stored reply mentioned AI or automation, both carried `fromName: "Code with Mosh
+Support Team"` and a null `rfcMessageId`, and a threaded reply to the first reopened
+it to OPEN with `autoResolvedAt` still set and enqueued no further jobs.
+
+### Seeding sample tickets
+
+`cd server && bun run db:seed:tickets` loads `prisma/seed-tickets.json` - 19
+tickets and 28 messages captured from a development database, spread over about
+ten days - so an emptied database can be refilled with a queue worth looking at.
+Task 3.4.
+
+- **It refuses a database that already holds tickets**, because the mistake being
+  guarded is running it twice and getting two of everything. `--force` adds
+  anyway, skipping any fixture ticket whose Message-IDs are already present
+  (`Message.rfcMessageId` is unique, so without the skip a second `--force` would
+  abort with a raw P2002). `--reset` deletes first.
+- **`--reset` deletes `RawEmail` before `Ticket`, and must.** `Message` cascades
+  from `Ticket`; `RawEmail.ticket` is `onDelete: SetNull` and
+  `RawEmail.createdMessageId` is a plain `Int?` nothing enforces. A bare
+  `ticket.deleteMany()` would leave rows pointing at deleted messages and - worse
+  - keep their `dedupeKey`, so the next `email:test` with a Message-ID used before
+  the reset would be answered `duplicate: true`, create no ticket, and look like a
+  broken webhook. `--reset` also refuses a `_test` database or `NODE_ENV=test`,
+  the inverse of the guard in `scripts/reset-test-db.ts`.
+- **It does not use `addMessage`**, which is the obvious helper and wrong twice
+  over: it takes no `createdAt`, so every message would be stamped `now()`, and it
+  moves `lastMessageAt` to that same `now()` - which is the column the fixture
+  exists to preserve. Nineteen tickets would end up indistinguishable under the
+  list's default ordering. Each ticket is one nested `create` with every timestamp
+  written explicitly instead. Nor should `addMessage` grow an optional
+  `createdAt`: the mandatory forward-only bump is the invariant it exists to
+  enforce.
+- `updatedAt` is `@updatedAt` and **cannot** be preserved - Prisma stamps it on
+  insert - so a seeded ticket shows an `updatedAt` later than its `createdAt`.
+  Nothing renders it.
+- `assigneeEmail` is resolved to a user id on *this* database, with a warning and
+  an unassigned ticket when nobody holds it. Eighteen of the nineteen are null and
+  the one is `agent@helpdesk.local`, who will not exist on a database seeded by a
+  different `SEED_ADMIN_EMAIL` - so that warning is the expected outcome. A
+  deactivated user is treated as a miss too, since `PATCH /api/tickets/:id`
+  refuses to assign one and seeding one would be a state nothing could reach.
+- `rfcMessageId` is preserved on all 19 messages that have one. Threading matches
+  on it and the dedupe key is built from it, so a fixture loaded without them
+  looks identical and silently stops `email:test --in-reply-to` working - five of
+  these messages thread onto another in the same file.
+- The fixture carries **no ids and no `RawEmail`**, by design: ids come from the
+  sequence, and a provider payload is hundreds of kilobytes no view reads.
+- The JSON is read and **Zod-validated at runtime, not `import`ed**:
+  `server/tsconfig.json` sets no `resolveJsonModule` and has `prisma` in its
+  `include`, so an import would run under Bun and fail `bun run typecheck`. The
+  schema validates against the generated Prisma enums, so a fixture written before
+  an enum changed fails with a readable message.
+- **All 19 are `OPEN` and none is auto-resolved**, so nothing seeded exercises the
+  RESOLVED or CLOSED rendering or the notice. `email:test` is still the better
+  demo for the classifier and the auto-resolver, because it drives the real
+  inbound path.
+
 ## Background jobs
 
 The queue is **pg-boss**, in the application's own Postgres. `tech-stack.md` has
@@ -1161,6 +1405,18 @@ the reasoning; this is what you need to know to work on it. Task 4.2.
 lifecycle. `server/src/jobs/` holds the handlers, one file per queue plus an
 `index.ts` that registers them. Both entry points call `startQueue()` then
 `startWorkers()`: `index.ts` (the API) and `worker.ts` (the workers alone).
+
+**Two queues, both enqueued together when a ticket arrives**: `ticket.classify`
+and `ticket.auto-resolve`. `startQueue` iterates `Object.values(QUEUES)`, so
+adding a member creates the queue with the shared retry policy automatically -
+which is also why `lib/queue.test.ts` asserts `bossUse.created` against
+`Object.values(QUEUES)` rather than a literal list, and needed no change when the
+second queue landed. `QUEUE_OPTIONS` is one policy for both; three attempts on
+`ticket.auto-resolve` means up to three paid model calls and three attempts at
+replying to a student, which is safe only because of that queue's guarded
+`updateMany` - the second attempt finds the ticket already RESOLVED and writes
+nothing. Split the constant into a `Record<QueueName, ...>` if the cost ever
+matters.
 
 **pg-boss keeps its own `pgboss` schema and migrates it itself on `start()`.**
 Nothing in `prisma/schema.prisma` describes those tables, `bun run db:migrate`
@@ -1177,7 +1433,21 @@ than an optimisation: `fromPrisma(tx)` hands pg-boss the transaction's own
 connection, so the job row is written by the same transaction as the work it
 describes. Either both commit or neither does, and the window where a process
 commits a ticket and then dies before anyone is told to classify it does not
-exist. `services/inbound-email.ts` is the example.
+exist. `services/inbound-email.ts` is the example, and it enqueues **both**
+arrival jobs inside `convert()`'s one serializable transaction, in the same
+`if (parentTicketId === null)` block.
+
+**A `serializable()` retry cannot duplicate them**, which is worth stating
+because it looks as though it should. The retry re-runs the whole callback, but
+the job rows are not special - they are rows written through `tx`, so an aborted
+attempt rolls them back along with the ticket and the retry writes fresh ones.
+Nothing commits until the callback returns.
+
+**Two jobs rather than one doing both**, because they are independent decisions
+that fail independently: a provider timeout while writing a reply must not cost
+the ticket its category, and a model that cannot pick a category has said nothing
+about whether the knowledge base answers the question. Each earns its own
+retries.
 
 **It throws, and callers must not catch it.** A failed enqueue should abort the
 transaction, which in the inbound path is safe rather than dangerous: the
@@ -1210,7 +1480,11 @@ returns `null` and does nothing. **Off is a configuration; broken is an error.**
 - **`batchSize` is the concurrency limit.** pg-boss hands the handler an array
   even when it holds one job; handle them in turn, because `Promise.all` would
   multiply the limit. Two for classification - a ceiling on concurrent model
-  calls, so a backlog drains steadily instead of being rate limited.
+  calls, so a backlog drains steadily instead of being rate limited - and **one**
+  for auto-resolution, which is the most expensive call in the system and the only
+  one that resolves a ticket. `jobs/auto-resolve-ticket.job.ts` is otherwise a
+  near-copy of the classifier's, deliberately: a reader who knows one knows the
+  other.
 
 ### Running it
 
@@ -1224,7 +1498,12 @@ healthy.
 
 Shutdown is graceful in both: the HTTP server closes first, then `stopQueue()`
 gives jobs in flight 25 seconds - longer than the classifier's own 20s model
-timeout, so a stop does not abandon the job it is waiting for.
+timeout, so a stop does not abandon the job it is waiting for. It is *shorter*
+than the auto-resolver's 30s, deliberately: that call is cut short instead, which
+loses nothing, because nothing is written until the model has answered, so the job
+is simply never completed and pg-boss hands it on once it expires. Raising the
+window to cover it would put a container orchestrator's own kill deadline in
+charge of shutdown and lose the classifications this timeout exists to protect.
 
 **The e2e stack runs with `QUEUE_ENABLED=false`** (`server/.env.test`), set
 rather than absent for the reason `OPENAI_API_KEY=` is: Bun layers `.env.test`
@@ -1385,12 +1664,13 @@ the page rather than the test, fix the page and say so.
 `bun test` inside the `server/` workspace, beside the module each one covers.
 The runtime is Bun and the server has no build step, so its own runner needs no
 dependency and no configuration - Vitest is the client's because Vite's jsdom
-setup is built around it. The eight so far cover the three AI features and the
+setup is built around it. The ten so far cover the four AI features and the
 job queue - `src/services/polish-reply.test.ts`,
 `src/services/summarize-ticket.test.ts`, `src/services/classify-ticket.test.ts`,
-`src/routes/tickets.polish.test.ts`, `src/routes/tickets.summary.test.ts`,
-`src/lib/ai.test.ts`, `src/lib/queue.test.ts` and
-`src/jobs/classify-ticket.job.test.ts`; read them, and `src/test/fakes.ts`,
+`src/services/auto-resolve-ticket.test.ts`, `src/routes/tickets.polish.test.ts`,
+`src/routes/tickets.summary.test.ts`, `src/lib/ai.test.ts`,
+`src/lib/queue.test.ts`, `src/jobs/classify-ticket.job.test.ts` and
+`src/jobs/auto-resolve-ticket.job.test.ts`; read them, and `src/test/fakes.ts`,
 before adding more.
 
 | Command | Runs |
@@ -1422,8 +1702,25 @@ model stays in `e2e/` or stays verified by hand.
    faked in exactly one place. Expose the state as
    mutable objects rather than values - a primitive export is snapshotted at
    import and later writes to it are invisible - and give it a `resetFakes()` for
-   `beforeEach`. Do not pass `--concurrent`: two files driving one set of fakes at
-   once would be the same bug again.
+   `beforeEach`. Where that is not possible because the real module exports a
+   plain value, use a **getter** in the fake: `env.supportEmailAddress` is one,
+   driven by `addressEnv`, and it has to be fake-controlled rather than spread
+   through from the real `env` because `test/env-defaults.ts` deliberately does not
+   set `SUPPORT_EMAIL_ADDRESS` - so a developer with one in `server/.env` and a CI
+   box without one would otherwise run different tests. Do not pass
+   `--concurrent`: two files driving one set of fakes at once would be the same bug
+   again.
+
+   **When two services need the same faked function with different arguments,
+   dispatch inside the one registration rather than adding a second.** The
+   classifier and the auto-resolver both call `prisma.ticket.findUnique` with
+   different `select`s, and both test files assert their own `select` verbatim, so
+   `fakes.ts` keys off the request - `select.autoResolvedAt` is asked for only by
+   the auto-resolver - and hands back one of two row registries. Widening either
+   row into a union would have made the classifier's assertions lie. The fake
+   `prisma` also supplies `$transaction` in its callback form, so `serializable()`
+   is the real helper and `addMessage` really runs: the transaction is the boundary
+   to replace, not the code under it.
 2. **Import the module under test with `await import`, not a static import.**
    `mock.module` is **not hoisted** in Bun, and the fakes module uses top-level
    `await`, so a static `import { thing } from './thing.ts'` can be evaluated
@@ -1500,8 +1797,10 @@ the main session like any other client code.
 Phase 1 is done. Phase 2 is done on the server, and all of it is done on the
 client except a restore/suspend control on the admin user page. Phase 3 has its
 read half - the list and the detail page (3.1-3.3, 3.5, 3.6, 3.9a, 3.9b, 3.10) -
-and nothing that writes to a ticket; Phase 4 has its inbound half (4.3-4.11,
-less the queue).
+plus the ticket seed script (3.4), and nothing else that writes to a ticket;
+Phase 4 has its inbound half (4.3-4.11) and the queue (4.2), though conversion
+itself is still inline rather than queued (4.5). Of Phase 5, classification
+(5.3-5.5, 5.9) and knowledge-base auto-resolution (5.12) are done.
 
 Shared: `core/` holds `createUserSchema`, validated by the dialog and by
 `POST /api/users` alike, and `ticketReplySchema`, validated by the reply
@@ -1529,17 +1828,28 @@ appends an agent's reply - stored on the ticket, emailed nowhere - with `GET
 admin-only. `POST /api/tickets/:id/polish` rewrites a draft reply and `POST
 /api/tickets/:id/summary` summarises the ticket and its thread, both with OpenAI
 `gpt-5-nano` through the Vercel AI SDK and both storing nothing. **A new ticket is
-also classified automatically**, by `services/classify-ticket.ts` running in a
-pg-boss worker off a job the inbound path enqueues *inside* its own transaction -
-the only AI that writes to the database and the only one nobody triggers. All three work off the one optional
-secret (`OPENAI_API_KEY`; without it they log or answer 503 and the system
-otherwise behaves exactly as before). `bun run email:test` exercises the whole inbound path locally
-without a provider account - including the classifier, which is how it was
-verified: a refund-flavoured mail became a `REFUND_REQUEST` ticket and a broken-
-video one a `TECHNICAL_QUESTION`, each a second or two after the webhook had
-already answered 200. See Tickets and inbound email above for the webhook's
-position above `express.json()`, the dedupe key, the two-phase write and the
-threading rules.
+also classified automatically, and sometimes answered and resolved outright**, by
+`services/classify-ticket.ts` and `services/auto-resolve-ticket.ts` running in
+pg-boss workers off two jobs the inbound path enqueues *inside* its own
+transaction - the two AI features nobody triggers, and the only two that write to
+the database. The auto-resolver is the only one anywhere that writes a *reply*: if
+`knowledge-base.md` definitively answers the opening message it stores an outbound
+`Message` in the support team's name and sets `status: RESOLVED` with
+`autoResolvedAt`, and otherwise leaves the ticket OPEN for a human, which is the
+common case. `knowledge-base.md` at the repository root is therefore server input
+rather than documentation, and its absence is the feature's off switch. All four
+work off the one optional secret (`OPENAI_API_KEY`; without it they log or answer
+503 and the system otherwise behaves exactly as before). `bun run email:test`
+exercises the whole inbound path locally without a provider account - including
+both arrival jobs, which is how they were verified: a refund-flavoured mail became
+a `REFUND_REQUEST` ticket and a broken-video one a `TECHNICAL_QUESTION`, each a
+second or two after the webhook had already answered 200; and, on 2026-10-10, a
+"videos are not playing" mail and a "what is your refund policy?" mail were both
+answered from the knowledge base and resolved, while a request *for* a refund, a
+mail mentioning a lawyer and a question about the 2027 curriculum all stayed OPEN.
+See Tickets and inbound email above for the webhook's position above
+`express.json()`, the dedupe key, the two-phase write and the threading rules, and
+Auto-resolving a ticket for the two escalation phrase lists and why they differ.
 
 Working on the client: the login page at `/login`, an auth context that restores
 the session from `GET /api/me` on load, a `ProtectedRoute` wrapper, a nav bar
@@ -1616,6 +1926,13 @@ that sends the draft to be rewritten and an **Undo polish** beside the note that
 says it was. See Replying to a ticket, Polishing a draft reply and Summarising a
 ticket above.
 
+Above the `<h1>`, and only when `autoResolvedAt` is set, an `AutoResolvedNotice`
+says the reply was written from the knowledge base rather than by a colleague,
+that nobody reviewed it, and that nothing was emailed to the requester. It sits
+there rather than in the Details card because it changes how the rest of the page
+should be read, and it is the **only** place the automation surfaces anywhere -
+the thread is deliberately silent. See Auto-resolving a ticket above.
+
 The Details card is a description list - Status, Category, Assigned to,
 Requester, Opened, Last message - with the label above each value, because a
 22rem column has no room for two. The thread is one `Card` per message with a
@@ -1679,42 +1996,65 @@ answers with text instead of a ticket).
 
 The AI features and the queue are the only things in `server/` with unit tests,
 under `bun test`: `services/polish-reply.test.ts`,
-`services/summarize-ticket.test.ts` and `services/classify-ticket.test.ts` for the
-prompts, the provider options and the guards, `routes/tickets.polish.test.ts` and
-`routes/tickets.summary.test.ts` for the HTTP contracts through a real Express
-app, `lib/ai.test.ts` for the configured and unconfigured key, and
-`lib/queue.test.ts` plus `jobs/classify-ticket.job.test.ts` for the queue - the
-transactional enqueue, the disabled-vs-broken split, and which job failures are
-retried. `src/test/fakes.ts` owns every fake they share and
-`src/test/env-defaults.ts` keeps them off a developer's `.env`; see Testing →
+`services/summarize-ticket.test.ts`, `services/classify-ticket.test.ts` and
+`services/auto-resolve-ticket.test.ts` for the prompts, the provider options and
+the guards, `routes/tickets.polish.test.ts` and `routes/tickets.summary.test.ts`
+for the HTTP contracts through a real Express app, `lib/ai.test.ts` for the
+configured and unconfigured key, and `lib/queue.test.ts` plus
+`jobs/classify-ticket.job.test.ts` and `jobs/auto-resolve-ticket.job.test.ts` for
+the queue - the transactional enqueue, the disabled-vs-broken split, and which job
+failures are retried. The auto-resolver's is the largest file of the lot and
+**mostly about what it refuses to do**, which is the proportion the feature
+deserves: every pre-flight refusal, each escalation category, the money-phrase
+asymmetry in all three directions, the reply guards, the `{ status: OPEN,
+autoResolvedAt: null }` match, that no reply is written when that match misses, and
+that nothing stored mentions AI. `src/test/fakes.ts` owns every fake they share
+and `src/test/env-defaults.ts` keeps them off a developer's `.env`; see Testing →
 Server unit tests, which is also where the `mock.module` rules that shape exists
-for are written down. **No test anywhere reaches a real model**, but all three
-features have been exercised against a running API with a real key: a live summary,
-a live polish, and two inbound emails that classified correctly as `REFUND_REQUEST`
-and `TECHNICAL_QUESTION` with a reply to the first leaving its category alone.
+for are written down - including the one the auto-resolver added, that two services
+needing the same faked function dispatch inside one registration rather than
+adding a second. **No test anywhere reaches a real model**, but all four features
+have been exercised against a running API with a real key: a live summary, a live
+polish, two inbound emails that classified correctly as `REFUND_REQUEST` and
+`TECHNICAL_QUESTION` with a reply to the first leaving its category alone, and the
+five auto-resolve branches recorded under Auto-resolving a ticket above.
 
 Not built yet, in this feature's area: an agent's reply is stored on the ticket
 but never sent, so a student still hears nothing back; no record of who changed
 what, so nothing says who closed a ticket or reassigned it - a reply is the one
-action that names its author, through the message's own `fromName`; no job queue, so the webhook converts inline - `RawEmail.processedAt IS
-NULL` is the seam a worker slots into (4.2, 4.5); no provider account or real
-inbound route (4.1); attachment metadata is stored but the bytes are dropped; no
+action that names its author, through the message's own `fromName`; **conversion
+itself is still inline** rather than queued (4.5) - the queue exists and carries
+the two arrival jobs, but the webhook turns the payload into a ticket on its own
+thread, and `RawEmail.processedAt IS NULL` is still the seam a worker would slot
+into; no provider account or real inbound route (4.1); attachment metadata is stored but the bytes are dropped; no
 rate limit on the webhook (8.3) and none on the two AI endpoints either, which
-together with the classifier are the only paths here that cost money per call -
-and the classifier is the one that spends without anyone asking, one call per
-inbound email, with no budget and no sampling (it does now retry, three times,
-which multiplies the worst case rather than bounding it); nothing outbound at all,
-so no student ever receives a reply (4.12-4.15). Of Phase 5, classification is
-done (5.3-5.5, 5.9) but there is still no `LlmCall` audit row (5.2), no prompt
-caching (5.8), no stored per-ticket summary (5.6, 5.7, 5.11), no suggested reply
-from a knowledge base, and nothing marks a category as AI-assigned (part of 5.10)
-because nothing records who set one. A backfill for the tickets that predate the
-classifier does not exist either - they keep `category: null`, as do any whose
-job exhausted its retries. Nothing surfaces a dead-letter job to a human: a
-permanently failed classification is visible only as an uncategorised ticket and
-a row in `pgboss.job`. Conversion itself is still inline rather than queued
-(4.5), so the queue carries classification and nothing else yet. No seed script for sample tickets (3.4) - `email:test` makes better
-demo data for this feature.
+together with the two arrival jobs are the only paths here that cost money per
+call - and those two are the ones that spend without anyone asking, **now two
+calls per inbound email rather than one**, with no budget and no sampling, each
+retried up to three times, which multiplies the worst case rather than bounding
+it. The auto-resolver is the dearer of the two: it carries the whole knowledge
+base in its prompt and pays for `reasoningEffort: 'medium'`. Nothing outbound at
+all, so no student ever receives a reply (4.12-4.15) - **including the replies the
+auto-resolver writes**, which is the oddest consequence of that gap: a ticket can
+now be answered and resolved without the person who asked ever seeing the answer.
+Of Phase 5, classification (5.3-5.5, 5.9) and knowledge-base auto-resolution
+(5.12) are done, but there is still no `LlmCall` audit row (5.2), no prompt
+caching (5.8) - which the auto-resolver would benefit from most, since the
+knowledge base is the same thousand-odd tokens on every call - no stored per-ticket
+summary (5.6, 5.7, 5.11), no *suggested* reply an agent edits before sending as
+against an answer sent outright, and nothing marks a category as AI-assigned (part
+of 5.10) because nothing records who set one. A backfill does not exist for either
+job: tickets that predate the classifier keep `category: null`, tickets that
+predate the auto-resolver keep `autoResolvedAt: null` and were never offered an
+answer, as do any whose jobs exhausted their retries. Nothing surfaces a
+dead-letter job to a human: a permanently failed arrival job is visible only as an
+uncategorised or unanswered ticket and a row in `pgboss.job`. Conversion itself is still inline rather than queued
+(4.5), so the queue carries the two arrival jobs and nothing else yet.
+`bun run db:seed:tickets` now loads the 19-ticket fixture in
+`prisma/seed-tickets.json` (3.4), refusing a database that already holds tickets,
+with `--force` and `--reset` as the ways round that - but all 19 are `OPEN` and
+none is auto-resolved, so `email:test` is still the better demo for the classifier
+and the auto-resolver, which it drives for real.
 
 Elsewhere: a restore or suspend control on `/users` (task 2.13e; the API
 has supported both since phase 2 - `PATCH { active: true | false }` - so a

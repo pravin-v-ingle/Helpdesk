@@ -67,7 +67,14 @@ Built against seeded data, before email exists.
 - [x] 3.1 Add the `Ticket` model: status enum (`OPEN`, `RESOLVED`, `CLOSED`), category enum (`GENERAL_QUESTION`, `TECHNICAL_QUESTION`, `REFUND_REQUEST`), requester email and name, subject, timestamps.
 - [x] 3.2 Add the `Message` model for the emails and replies on a ticket, with an inbound or outbound direction.
 - [x] 3.3 Add indexes for the columns the list view filters and sorts on. (Covers the filters and the default order. Every column became sortable in 3.9b and `subject`, `requesterName` and the message count are deliberately left unindexed - see the note on `Ticket`'s `@@index` block for the reasoning and the trigger to revisit.)
-- [ ] 3.4 Write a seed script that creates sample tickets and messages.
+- [x] 3.4 Write a seed script that creates sample tickets and messages.
+      (`server/prisma/seed-tickets.ts`, `bun run db:seed:tickets`, loading the
+      19-ticket / 28-message fixture in `seed-tickets.json`. Refuses a database
+      that already holds tickets; `--force` appends, `--reset` clears first -
+      deleting `RawEmail` before `Ticket`, because that relation is `SetNull`
+      rather than `Cascade` and a surviving `dedupeKey` would make the next
+      `email:test` a silent no-op. Timestamps are written explicitly rather
+      than through `addMessage`, so the restored queue looks aged.)
 - [x] 3.5 Implement `GET /api/tickets` with pagination, filter by status and category, and sort by date.
 - [x] 3.6 Implement `GET /api/tickets/:id` returning the ticket and its messages. (The list row plus `assignedTo` and the thread, oldest message first. `Ticket.body` is left out - it is the first message denormalised, so the thread already carries it - and `bodyHtml`, on the ticket and on every message, stays server-side until something sanitises it. A non-numeric id is a 404, not a 400.)
 - [x] 3.7 Implement `PATCH /api/tickets/:id` to change status and category. One partial-update endpoint covering `assignedToId`, `status` and `category`: the keys present are the change, `null` clears the two nullable fields, an empty body is a 400, and the whole ticket comes back. Every status transition is allowed, CLOSED back to OPEN included.
@@ -129,10 +136,12 @@ dropped until there is a blob store to put them in.
 - [ ] 5.1 Add the Claude client wrapper with timeouts and retries.
 - [ ] 5.2 Add the `LlmCall` model logging model, prompt version, tokens, cost, latency, and ticket for every call.
 - [x] 5.3 Write the classification prompt with a structured output schema restricted to the three categories.
-- [x] 5.4 Implement the classification job, run when a ticket is created. (Not a
-      job: fired unawaited from the inbound path once the transaction has
-      committed. `RawEmail.processedAt IS NULL` and now `Ticket.category IS NULL`
-      are the seams a real worker would claim - see 4.2/4.5.)
+- [x] 5.4 Implement the classification job, run when a ticket is created. (A real
+      pg-boss job since 4.2: `ticket.classify`, enqueued *inside* the transaction
+      that creates the ticket, handled by `jobs/classify-ticket.job.ts`. It was
+      fired unawaited before that, which is what the earlier note here described.
+      `Ticket.category IS NULL` is still the seam a backfill would claim, and
+      `RawEmail.processedAt IS NULL` the one conversion itself would - see 4.5.)
 - [x] 5.5 Store the AI category and let an agent override it. (The write is
       conditional on `category` still being null, so a correction made while the
       model was thinking is not overwritten.)
@@ -140,9 +149,24 @@ dropped until there is a blob store to put them in.
 - [ ] 5.7 Implement the summary job, re-running when a new message arrives.
 - [ ] 5.8 Apply prompt caching to the fixed part of the prompt.
 - [x] 5.9 Make ticket creation succeed even when an AI call fails. (Structural:
-      classification runs after the commit and never throws.)
+      the ticket, its message and the `RawEmail` row are all committed before a
+      worker picks either arrival job up, so a classification or an
+      auto-resolution that fails for good leaves a working, open, uncategorised
+      ticket. The services now *do* throw on a transient failure - that is how a
+      job earns its three retries - which is the opposite of the pre-queue
+      contract the earlier note here described.)
 - [ ] 5.10 Show the category on the ticket list and detail pages, marked as AI-assigned and editable.
 - [ ] 5.11 Show the summary on the ticket detail page.
+- [x] 5.12 Auto-resolve a ticket the knowledge base definitively answers: reply
+      from `knowledge-base.md` and mark it RESOLVED, leaving anything not covered
+      OPEN for a human. (Added after the fact rather than mis-ticked against 5.10
+      - Phase 5 had no task for it. `services/auto-resolve-ticket.ts` on the
+      `ticket.auto-resolve` queue, enqueued beside the classification. Coverage
+      decides, not category; RESOLVED never CLOSED; the knowledge base's section
+      10 escalation rules are enforced by a phrase list as well as carried in the
+      prompt; nothing in the thread mentions AI, and `Ticket.autoResolvedAt` plus
+      a notice on the detail page are the only record. Gated on the knowledge
+      base being present and `OPENAI_API_KEY` being set, with no feature flag.)
 
 **Done when**: new tickets arrive already categorised and summarised, and agents can correct the category.
 

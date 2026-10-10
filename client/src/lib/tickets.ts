@@ -153,6 +153,17 @@ export type TicketDetail = Ticket & {
   assignedTo: TicketAssignee | null
   /** Oldest first - a thread is read in the order it happened. */
   messages: TicketMessage[]
+  /**
+   * When the knowledge-base auto-resolver answered this ticket, or null when
+   * nobody but a person has touched it. The thread is deliberately silent about
+   * it - no footer, and the reply is from the support team - so this is the only
+   * thing that tells an agent, and the notice at the top of the detail page is
+   * the only place it is said.
+   *
+   * On `TicketDetail` rather than `Ticket`, mirroring the server: the list
+   * neither filters on it nor shows it.
+   */
+  autoResolvedAt: string | null
 }
 
 export type TicketListParams = {

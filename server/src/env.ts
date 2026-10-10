@@ -293,6 +293,20 @@ export const env = {
    */
   supportEmailAddress: process.env.SUPPORT_EMAIL_ADDRESS?.trim().toLowerCase() || undefined,
   /**
+   * Where `knowledge-base.md` is, if not at the repository root. Optional, and
+   * unset is the normal case - `lib/knowledge-base.ts` resolves the default
+   * from its own module path rather than from the working directory, so it
+   * finds the file whether the process was started from the root or from
+   * `server/`.
+   *
+   * Not validated here, and deliberately so: an unreadable or missing
+   * knowledge base is not a startup failure, it is the auto-resolver switched
+   * off. `lib/knowledge-base.ts` answers `null` and every ticket stays OPEN for
+   * a human. Exiting at boot over it would turn an optional feature into a
+   * required one.
+   */
+  knowledgeBasePath: process.env.KNOWLEDGE_BASE_PATH?.trim() || undefined,
+  /**
    * The OpenAI account the AI features use - the reply polisher and the ticket
    * summariser. Optional, unlike every other secret here: see `openAiApiKey`
    * above for why, and `lib/ai.ts` for the 503 an absent key produces.

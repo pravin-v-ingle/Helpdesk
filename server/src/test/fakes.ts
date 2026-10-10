@@ -59,6 +59,20 @@ export const openaiEnv = {
   model: "gpt-5-nano",
 };
 
+/**
+ * `env.supportEmailAddress`, made movable for the same reason.
+ *
+ * It has to be fake-controlled rather than spread through from the real module,
+ * because it is read from `SUPPORT_EMAIL_ADDRESS` - which `test/env-defaults.ts`
+ * deliberately does not set, so a developer with one in `server/.env` and a CI
+ * box without one would run different tests. The auto-resolver's reply is
+ * attributed to this address and falls back when it is absent, and both branches
+ * are worth pinning.
+ */
+export const addressEnv = {
+  supportEmailAddress: undefined as string | undefined,
+};
+
 /** The `env.queue` section, mutable so a test can switch the queue off. */
 export const queueEnv = {
   enabled: true,
@@ -71,7 +85,17 @@ export const queueEnv = {
 // loads second is silently ignored.
 mock.module("../env.ts", () => ({
   ...realEnvModule,
-  env: { ...realEnvModule.env, openai: openaiEnv, queue: queueEnv },
+  env: {
+    ...realEnvModule.env,
+    openai: openaiEnv,
+    queue: queueEnv,
+    // A getter, because `addressEnv` is written *after* this object is built and
+    // a plain property would have snapshotted the value - the same trap the
+    // header warns about for primitive exports.
+    get supportEmailAddress() {
+      return addressEnv.supportEmailAddress;
+    },
+  },
 }));
 
 // --- 2. the real wrapper, before it is replaced ------------------------------
@@ -146,6 +170,29 @@ export function choosing(category: string) {
 }
 
 /**
+ * A model that answers in the shape `Output.object` expects: **the object
+ * itself**, with no wrapper.
+ *
+ * Worth a helper of its own next to `choosing()` precisely because the two
+ * differ on the wire and nothing in the types says so. `Output.choice` nests its
+ * answer under `result`; `Output.object` validates the bare object against the
+ * schema. Using the wrong one produces a schema-validation throw that reads like
+ * a prompt bug, which is a confusing afternoon.
+ */
+export function deciding(answer: { canAnswer: boolean; reply: string }) {
+  return answering(JSON.stringify(answer));
+}
+
+/**
+ * A reply long enough to clear `MIN_REPLY_LENGTH` and drawn from the fake
+ * knowledge base's section 7, so it is the kind of answer the feature exists to
+ * send. It mentions neither AI nor money, which is what makes it usable as the
+ * default in tests about everything else.
+ */
+export const DEFAULT_AUTO_REPLY =
+  "Thanks for getting in touch. Please clear your browser cache, update to the latest Chrome or Edge, and disable any browser extensions, then try the lesson again.";
+
+/**
  * What `openAiModel()` hands back, or throws. The AI SDK's own mock model,
  * so `generateText` runs for real and a test can assert against the call it
  * actually built rather than against a stubbed-out `generateText`, which would
@@ -190,6 +237,7 @@ export function detail(overrides: Partial<PublicTicketDetail> = {}): PublicTicke
     createdAt: new Date("2026-09-28T09:00:00.000Z"),
     updatedAt: new Date("2026-09-28T09:00:00.000Z"),
     assignedTo: null,
+    autoResolvedAt: null,
     ...overrides,
     messages,
     messageCount: messages.length,
@@ -248,8 +296,163 @@ export const ticketUpdateMany = mock(async (_args: unknown) => {
   return { count: classifyRow.updatedCount };
 });
 
+// --- 4d. the database, for the auto-resolver ---------------------------------
+
+/**
+ * The row the auto-resolver reads, and what its write reports.
+ *
+ * A registry of its own rather than widening `classifyRow`, because the two
+ * services read the same table through the same `findUnique` with **different
+ * `select`s**, and both test files assert on the exact `select` argument. One
+ * union row would make the classifier's assertions lie and `resetFakes()`
+ * ambiguous about which service it was resetting.
+ */
+export type AutoResolveTicketRow = {
+  subject: string;
+  body: string;
+  status: TicketStatus;
+  autoResolvedAt: Date | null;
+  _count: { messages: number };
+};
+
+export const autoResolveRow = {
+  ticket: null as AutoResolveTicketRow | null,
+  /** What the guarded `updateMany` reports. `0` is a race lost to an agent. */
+  updatedCount: 1,
+  findError: undefined as unknown,
+  updateError: undefined as unknown,
+  /** What the transaction itself throws, if anything - a database hiccup. */
+  transactionError: undefined as unknown,
+};
+
+export function autoResolveTicketRow(
+  overrides: Partial<AutoResolveTicketRow> = {},
+): AutoResolveTicketRow {
+  return {
+    subject: "Videos are not playing",
+    body: "Hello, the lesson videos will not play for me. What should I try?",
+    status: TicketStatus.OPEN,
+    autoResolvedAt: null,
+    _count: { messages: 1 },
+    ...overrides,
+  };
+}
+
+/** Everything the fake transaction recorded, so a test can assert on the write. */
+export const txUse = {
+  updateManys: [] as { where: Record<string, unknown>; data: Record<string, unknown> }[],
+  messages: [] as Record<string, unknown>[],
+  ticketUpdates: [] as unknown[],
+};
+
+const txTicketUpdateMany = mock(
+  async (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+    txUse.updateManys.push(args);
+    if (autoResolveRow.updateError) throw autoResolveRow.updateError;
+    return { count: autoResolveRow.updatedCount };
+  },
+);
+
+const txMessageCreate = mock(async (args: { data: Record<string, unknown> }) => {
+  txUse.messages.push(args.data);
+  return { id: 99, createdAt: new Date("2026-09-28T12:00:00.000Z") };
+});
+
+const txTicketUpdate = mock(async (args: unknown) => {
+  txUse.ticketUpdates.push(args);
+  return {};
+});
+
+/**
+ * The transaction client `serializable()` hands its callback.
+ *
+ * `message.create` and `ticket.update` are here because **`addMessage` is the
+ * real helper**: the auto-resolver writes its reply through the inbound path's
+ * own function, and faking that out would stop these tests saying anything about
+ * what actually gets stored. The same instinct as using the AI SDK's own mock
+ * model rather than stubbing `generateText` - replace the boundary, not the code
+ * under it.
+ */
+const transactionClient = {
+  ticket: { updateMany: txTicketUpdateMany, update: txTicketUpdate },
+  message: { create: txMessageCreate },
+};
+
+/**
+ * One `mock.module`, two row registries, dispatched on the `select`.
+ *
+ * The dispatch exists because `mock.module` is process-global: the classifier
+ * and the auto-resolver both call `prisma.ticket.findUnique`, and a second
+ * registration for the second service is exactly the mistake this file's header
+ * records breaking the suite twice. `autoResolvedAt` is only ever asked for by
+ * the auto-resolver, so it discriminates unambiguously - and asking the
+ * *request* which service it came from is what keeps both test files able to
+ * assert their own `select` verbatim.
+ */
+const ticketFindUniqueDispatch = mock(async (args: { select?: Record<string, unknown> }) => {
+  if (args?.select?.autoResolvedAt) {
+    if (autoResolveRow.findError) throw autoResolveRow.findError;
+    return autoResolveRow.ticket;
+  }
+  return ticketFindUnique(args);
+});
+
+const transaction = mock(
+  async (fn: (tx: typeof transactionClient) => Promise<unknown>, _options?: unknown) => {
+    if (autoResolveRow.transactionError) throw autoResolveRow.transactionError;
+    return fn(transactionClient);
+  },
+);
+
 mock.module("../lib/prisma.ts", () => ({
-  prisma: { ticket: { findUnique: ticketFindUnique, updateMany: ticketUpdateMany } },
+  prisma: {
+    ticket: { findUnique: ticketFindUniqueDispatch, updateMany: ticketUpdateMany },
+    // `serializable()` is the real helper, so what needs replacing is the
+    // transaction under it. The callback form only: the one caller that passes an
+    // array is in `services/tickets.ts`, which is faked wholesale above.
+    $transaction: transaction,
+  },
+}));
+
+// --- 4e. the knowledge base --------------------------------------------------
+
+/**
+ * The knowledge base the auto-resolver answers from, mutable so a test can take
+ * it away. That matters more than it looks: an absent knowledge base is the
+ * feature's entire off switch, so the off state needs testing as carefully as
+ * the on one.
+ */
+export const knowledgeBaseUse = {
+  text: null as string | null,
+};
+
+/**
+ * A miniature knowledge base with the three sections the tests turn on: 4 so a
+ * refund *policy* question is answerable, 7 so a technical question is, and 10
+ * so the escalation rules are in the prompt where the tests look for them.
+ */
+export const DEFAULT_KNOWLEDGE_BASE = [
+  "# Support Knowledge Base",
+  "",
+  "## 4. Refund Policy",
+  "- 30-day money-back guarantee.",
+  "- Full refund if requested within 30 days of purchase.",
+  "",
+  "## 7. Technical Issues",
+  "### Q: Videos are not playing.",
+  "Clear your browser cache, use the latest Chrome or Edge, disable extensions.",
+  "",
+  "## 10. Escalation Rules (Internal Policy)",
+  "Escalate to a human if the user threatens legal action, requests a refund outside",
+  "the 30-day window, disputes a charge, raises account security, or confidence is low.",
+].join("\n");
+
+export const knowledgeBase = mock((): string | null => knowledgeBaseUse.text);
+
+mock.module("../lib/knowledge-base.ts", () => ({
+  knowledgeBase,
+  knowledgeBasePath: mock(() => "/fake/knowledge-base.md"),
+  resetKnowledgeBase: mock(() => {}),
 }));
 
 // --- 4c. pg-boss, for the queue wrapper --------------------------------------
@@ -345,6 +548,25 @@ export function resetFakes() {
   classifyRow.updateError = undefined;
   ticketFindUnique.mockClear();
   ticketUpdateMany.mockClear();
+
+  addressEnv.supportEmailAddress = undefined;
+
+  autoResolveRow.ticket = autoResolveTicketRow();
+  autoResolveRow.updatedCount = 1;
+  autoResolveRow.findError = undefined;
+  autoResolveRow.updateError = undefined;
+  autoResolveRow.transactionError = undefined;
+  txUse.updateManys.length = 0;
+  txUse.messages.length = 0;
+  txUse.ticketUpdates.length = 0;
+  txTicketUpdateMany.mockClear();
+  txMessageCreate.mockClear();
+  txTicketUpdate.mockClear();
+  ticketFindUniqueDispatch.mockClear();
+  transaction.mockClear();
+
+  knowledgeBaseUse.text = DEFAULT_KNOWLEDGE_BASE;
+  knowledgeBase.mockClear();
 
   queueEnv.enabled = true;
   queueEnv.runWorkers = true;

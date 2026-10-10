@@ -73,6 +73,7 @@ function detail(overrides: Partial<TicketDetail> = {}): TicketDetail {
     updatedAt: '2026-09-28T11:30:00.000Z',
     messageCount: messages.length,
     assignedTo: null,
+    autoResolvedAt: null,
     ...overrides,
     messages,
   }
@@ -998,5 +999,51 @@ describe('TicketDetailPage', () => {
         'Written by AI from the conversation. Not saved - each press summarises the thread as it stands.',
       ),
     ).toBeInTheDocument()
+  })
+
+  /**
+   * The notice is the only place the auto-resolver surfaces anywhere: the thread
+   * is deliberately silent about it, so a page that failed to render this would
+   * leave an agent with no way at all to tell a machine's reply from a
+   * colleague's.
+   */
+  describe('the auto-resolved notice', () => {
+    function notice() {
+      return screen.queryByRole('note', { name: 'Answered from the knowledge base' })
+    }
+
+    it('shows when the ticket was answered from the knowledge base', async () => {
+      mockApi({ ticket: detail({ autoResolvedAt: '2026-09-28T11:35:00.000Z' }) })
+      const page = renderPage()
+      await page.heading('Cannot see my enrolment')
+
+      const shown = notice()
+      expect(shown).toBeInTheDocument()
+      expect(shown).toHaveTextContent(dateTime('2026-09-28T11:35:00.000Z'))
+      expect(shown?.querySelector('time')).toHaveAttribute(
+        'datetime',
+        '2026-09-28T11:35:00.000Z',
+      )
+    })
+
+    /** All three facts, because each is one an agent would otherwise assume wrong. */
+    it('says it was not written or reviewed by a person, and was not emailed', async () => {
+      mockApi({ ticket: detail({ autoResolvedAt: '2026-09-28T11:35:00.000Z' }) })
+      const page = renderPage()
+      await page.heading('Cannot see my enrolment')
+
+      const shown = notice()
+      expect(shown).toHaveTextContent('rather than by a colleague')
+      expect(shown).toHaveTextContent('no one reviewed it before it was saved')
+      expect(shown).toHaveTextContent('Nothing has been emailed to the requester')
+    })
+
+    it('is absent on a ticket nobody answered automatically', async () => {
+      mockApi()
+      const page = renderPage()
+      await page.heading('Cannot see my enrolment')
+
+      expect(notice()).not.toBeInTheDocument()
+    })
   })
 })
