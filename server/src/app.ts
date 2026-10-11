@@ -3,6 +3,7 @@ import { toNodeHandler } from "better-auth/node";
 import { env } from "./env.ts";
 import { auth, CLIENT_IP_HEADER } from "./lib/auth.ts";
 import { assigneesRouter } from "./routes/assignees.ts";
+import { dashboardRouter } from "./routes/dashboard.ts";
 import { inboundEmailRouter } from "./routes/email.ts";
 import { healthRouter } from "./routes/health.ts";
 import { meRouter } from "./routes/me.ts";
@@ -49,6 +50,9 @@ export function createApp() {
   // Routes
   app.use("/api/health", healthRouter);
   app.use("/api/me", meRouter);
+  // Signed-in, any role, like the ticket list it counts: the dashboard is the
+  // state of the queue, and the queue is everybody's.
+  app.use("/api/dashboard", dashboardRouter);
   // Signed-in, any role - see the note in the router: the people a ticket can
   // be assigned to, which an agent needs and `/api/users` would not give them.
   app.use("/api/assignees", assigneesRouter);

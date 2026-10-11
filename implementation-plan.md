@@ -192,11 +192,36 @@ dropped until there is a blob store to put them in.
 
 ## Phase 7 - Dashboard
 
-- [ ] 7.1 Implement the dashboard metrics endpoint.
-- [ ] 7.2 Build the dashboard page with ticket counts by status and by category.
-- [ ] 7.3 Add ticket volume over time.
+- [x] 7.1 Implement the dashboard metrics endpoint. `GET /api/dashboard`, one
+      SQL aggregate, `requireAuth` and no role check.
+- [~] 7.2 Build the dashboard page with ticket counts by status and by category.
+      Built at `/`, replacing the placeholder home page, with the five figures
+      that were asked for: total tickets, open tickets, tickets resolved by AI,
+      that as a percentage, and the average resolution time. **Counts by
+      category are not there yet**, and only OPEN is broken out of the status
+      counts - the rest of 7.2 is still open.
+- [x] 7.3 Add ticket volume over time. A bar per day for the last 30 days,
+      below the tiles, from the same request - `dailyVolume` on
+      `GET /api/dashboard`, zero-filled in SQL so a quiet day is a zero bar
+      rather than a closed gap. Days are bucketed in **UTC**, which is the one
+      caveat on the chart: `Ticket.createdAt` carries no zone, so an agent far
+      from UTC sees a late-evening ticket on the next bar. Bucketing in the
+      viewer's zone means a parameter on the request and a cache key per zone,
+      which is not worth it until somebody is bothered.
 - [ ] 7.4 Add draft acceptance rate and category override rate.
-- [ ] 7.5 Link every dashboard tile through to a filtered ticket list.
+- [~] 7.5 Link every dashboard tile through to a filtered ticket list. Two of
+      the five link - Total tickets to `/tickets` and Open tickets to
+      `?status=OPEN`. The other three cannot: the ticket list has no filter for
+      `autoResolvedAt` or for a resolution time, so a link would land an agent
+      on a list that does not show what they clicked. Finishing this task means
+      giving the list those filters first.
+
+Measuring a resolution time needed a column: `Ticket.resolvedAt`, stamped when
+a ticket leaves the queue and cleared when a reply reopens it. `updatedAt` moves
+on any edit and `lastMessageAt` on any reply, so neither could stand in for it,
+and `autoResolvedAt` covers only the auto-resolver's own. Tickets resolved before
+it existed therefore have no resolution time, which the page reports as a sample
+size rather than hiding in the average.
 
 **Done when**: opening the app shows the current state of the queue at a glance.
 

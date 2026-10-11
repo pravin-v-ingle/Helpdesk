@@ -55,6 +55,24 @@ function submit(user: User) {
   return user.click(screen.getByRole('button', { name: 'Create user' }))
 }
 
+/**
+ * Put a long value in a field by pasting it, rather than typing it character by
+ * character.
+ *
+ * `user.type` fires a full key sequence per character, each one re-rendering the
+ * form and re-running the Zod resolver, so the two 128-character password cases
+ * below cost well over 250 of those and used to push the test past Vitest's 5s
+ * default - intermittently, and only in a full run where the machine is already
+ * busy. Pasting is a real user action with the same `change` event at the end of
+ * it, and what those tests are about is the schema's length rule, not the
+ * keystrokes. Keep `fill`/`type` for short values, where the key sequence is
+ * cheap and closer to what an admin does.
+ */
+async function pasteInto(user: User, label: string, value: string) {
+  await user.click(screen.getByLabelText(label))
+  await user.paste(value)
+}
+
 /** The dialog unmounts a tick after it closes, so its absence is awaited. */
 function expectClosed() {
   return waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
@@ -118,9 +136,9 @@ describe('CreateUserDialog', () => {
     await open(user)
 
     // 129 characters: one past the maximum the shared schema and Better Auth
-    // both set. Typed straight into the field, since `fill` is for short values.
+    // both set. Pasted rather than typed - see `pasteInto`.
     await fill(user, { name: 'Dana New', email: 'dana@example.com' })
-    await user.type(screen.getByLabelText('Password'), 'a'.repeat(129))
+    await pasteInto(user, 'Password', 'a'.repeat(129))
     await submit(user)
 
     expect(await screen.findByText('Password must be at most 128 characters.')).toBeInTheDocument()
@@ -128,7 +146,7 @@ describe('CreateUserDialog', () => {
 
     // One character shorter is the boundary, and it goes through.
     await user.clear(screen.getByLabelText('Password'))
-    await user.type(screen.getByLabelText('Password'), 'a'.repeat(128))
+    await pasteInto(user, 'Password', 'a'.repeat(128))
     await submit(user)
 
     await expectClosed()

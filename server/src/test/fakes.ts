@@ -397,16 +397,63 @@ const ticketFindUniqueDispatch = mock(async (args: { select?: Record<string, unk
   return ticketFindUnique(args);
 });
 
-const transaction = mock(
-  async (fn: (tx: typeof transactionClient) => Promise<unknown>, _options?: unknown) => {
+/**
+ * Both forms of `$transaction`, because both are now used: the callback form by
+ * every check-then-write under `serializable()`, and the **array** form by the
+ * dashboard, which runs its two reads in one `RepeatableRead` snapshot. The array
+ * holds already-pending promises, so awaiting them is all the real thing does
+ * that matters here - there is no isolation to simulate in a fake.
+ */
+export const transaction = mock(
+  async (
+    work: ((tx: typeof transactionClient) => Promise<unknown>) | readonly Promise<unknown>[],
+    _options?: unknown,
+  ) => {
     if (autoResolveRow.transactionError) throw autoResolveRow.transactionError;
-    return fn(transactionClient);
+    if (Array.isArray(work)) return Promise.all(work);
+    return (work as (tx: typeof transactionClient) => Promise<unknown>)(transactionClient);
   },
 );
+
+/**
+ * `prisma.$queryRaw`, which the dashboard service calls twice - once for the
+ * scalar aggregate and once for the daily volume series.
+ *
+ * A tagged template, so the fake receives the SQL fragments and the bound values
+ * as separate arguments - and recording both is the point rather than
+ * incidental: the enum rule says `TicketStatus.OPEN` must arrive as a *bound
+ * value*, never typed into the SQL as `'OPEN'`, and that is only checkable if
+ * the two are kept apart.
+ *
+ * **One registration, two row sets, dispatched on the SQL** - the same rule
+ * `ticketFindUniqueDispatch` below follows, and for the same reason: a second
+ * `mock.module` for the same module is the mistake this file's header records
+ * breaking the suite twice. `generate_series` appears only in the volume query,
+ * so it discriminates unambiguously.
+ *
+ * Both row sets are plain arrays rather than typed rows, because the service has
+ * to survive a driver handing a numeric back as a string - a shape the real
+ * types do not admit.
+ */
+export const queryRawUse = {
+  metricsRows: [] as unknown[],
+  volumeRows: [] as unknown[],
+  error: undefined as Error | undefined,
+  /** Every call, as `{ sql, values }`, in order. */
+  calls: [] as { sql: string; values: unknown[] }[],
+};
+
+export const queryRaw = mock(async (strings: unknown, ...values: unknown[]) => {
+  const sql = Array.isArray(strings) ? strings.join("?") : String(strings);
+  queryRawUse.calls.push({ sql, values });
+  if (queryRawUse.error) throw queryRawUse.error;
+  return sql.includes("generate_series") ? queryRawUse.volumeRows : queryRawUse.metricsRows;
+});
 
 mock.module("../lib/prisma.ts", () => ({
   prisma: {
     ticket: { findUnique: ticketFindUniqueDispatch, updateMany: ticketUpdateMany },
+    $queryRaw: queryRaw,
     // `serializable()` is the real helper, so what needs replacing is the
     // transaction under it. The callback form only: the one caller that passes an
     // array is in `services/tickets.ts`, which is faked wholesale above.
@@ -564,6 +611,12 @@ export function resetFakes() {
   txTicketUpdate.mockClear();
   ticketFindUniqueDispatch.mockClear();
   transaction.mockClear();
+
+  queryRawUse.metricsRows = [];
+  queryRawUse.volumeRows = [];
+  queryRawUse.error = undefined;
+  queryRawUse.calls.length = 0;
+  queryRaw.mockClear();
 
   knowledgeBaseUse.text = DEFAULT_KNOWLEDGE_BASE;
   knowledgeBase.mockClear();

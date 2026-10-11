@@ -1,6 +1,6 @@
 import { Prisma } from "../generated/prisma/client.ts";
-import { MessageDirection } from "../generated/prisma/enums.ts";
-import type { TicketCategory, TicketStatus } from "../generated/prisma/enums.ts";
+import { MessageDirection, TicketStatus } from "../generated/prisma/enums.ts";
+import type { TicketCategory } from "../generated/prisma/enums.ts";
 import { prisma } from "../lib/prisma.ts";
 import { serializable } from "../lib/transaction.ts";
 import { HttpError } from "../middleware/error-handler.ts";
@@ -258,6 +258,31 @@ export type TicketPatch = {
 };
 
 /**
+ * What a status change does to `resolvedAt`, which no caller sets directly: it
+ * is derived here so the column cannot drift from the status beside it.
+ *
+ * - **No status in the patch** is no opinion: an empty object, so the key never
+ *   reaches Prisma. A category or assignee edit must not touch a resolution
+ *   time, which is exactly the bug that makes `updatedAt` useless for measuring
+ *   one.
+ * - **Back to OPEN** clears it. A ticket that is open again has no resolution
+ *   time, and leaving the old one would keep it in the dashboard's average while
+ *   an agent is still working it.
+ * - **RESOLVED or CLOSED** stamps it, but only when it is not already set.
+ *   RESOLVED -> CLOSED is the case that matters: closing a ticket resolved last
+ *   week did not take a week to resolve, and re-stamping would overwrite the one
+ *   true figure with the moment somebody tidied the queue.
+ */
+function resolvedAtFor(
+  status: TicketStatus | undefined,
+  current: Date | null,
+): { resolvedAt?: Date | null } {
+  if (status === undefined) return {};
+  if (status === TicketStatus.OPEN) return { resolvedAt: null };
+  return current === null ? { resolvedAt: new Date() } : {};
+}
+
+/**
  * Change a ticket's assignee, status or category - any combination, in one
  * write, so a UI that eventually changes two at once cannot half-apply them.
  *
@@ -295,15 +320,22 @@ export async function updateTicket(id: number, patch: TicketPatch): Promise<Publ
       }
     }
 
-    const exists = await tx.ticket.findUnique({ where: { id }, select: { id: true } });
-    if (!exists) throw new HttpError(404, "Ticket not found");
+    // `resolvedAt` comes along for the ride when `status` does, so the existence
+    // check reads it rather than just the id.
+    const current = await tx.ticket.findUnique({
+      where: { id },
+      select: { id: true, resolvedAt: true },
+    });
+    if (!current) throw new HttpError(404, "Ticket not found");
 
     // Spread rather than assigned field by field: an absent key must not reach
     // Prisma at all, because `{ status: undefined }` and no `status` mean the
     // same thing to it today but the distinction is ours to keep, not its.
+    // `resolvedAtFor` obeys the same rule - it returns an empty object when the
+    // patch says nothing about the status.
     return tx.ticket.update({
       where: { id },
-      data: { ...patch },
+      data: { ...patch, ...resolvedAtFor(patch.status, current.resolvedAt) },
       select: ticketDetailSelect,
     });
   });

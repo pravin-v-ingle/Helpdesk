@@ -149,7 +149,17 @@ describe("autoResolveTicket", () => {
     expect(updateArgs().data).toEqual({
       status: TicketStatus.RESOLVED,
       autoResolvedAt: expect.any(Date),
+      resolvedAt: expect.any(Date),
     });
+    // The same instant, from one `new Date()`. Two columns because they answer
+    // different questions - when the ticket left the queue, and that the reply
+    // was not a colleague's - and they part company the moment a student's
+    // reply reopens it, which clears the first and keeps the second.
+    const { autoResolvedAt, resolvedAt } = updateArgs().data as {
+      autoResolvedAt: Date;
+      resolvedAt: Date;
+    };
+    expect(resolvedAt.getTime()).toBe(autoResolvedAt.getTime());
     expect(storedMessage()).toMatchObject({
       ticketId: 7,
       direction: "OUTBOUND",

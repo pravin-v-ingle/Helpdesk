@@ -215,10 +215,17 @@ async function convert(rawEmailId: number, email: InboundEmail): Promise<IngestR
     // Both RESOLVED and CLOSED reopen: filing a student's reply under a closed
     // ticket would leave it where no default view shows it, which is the exact
     // failure this product exists to prevent.
+    //
+    // `resolvedAt` is cleared with the status, because a ticket that is open
+    // again has no resolution time - leaving the old one would put this ticket
+    // in the dashboard's average while an agent is still working it. The figure
+    // is retired rather than kept as history: `autoResolvedAt` deliberately
+    // survives a reopen, since what *it* records is that a reply in the thread
+    // was not a colleague's, and that stays true however the ticket moves.
     if (parentTicketId !== null) {
       await tx.ticket.updateMany({
         where: { id: parentTicketId, status: { in: ["RESOLVED", "CLOSED"] } },
-        data: { status: "OPEN" },
+        data: { status: "OPEN", resolvedAt: null },
       });
     }
 

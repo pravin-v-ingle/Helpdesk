@@ -16,6 +16,7 @@
     --color-sidebar-primary: var(--sidebar-primary);
     --color-sidebar-foreground: var(--sidebar-foreground);
     --color-sidebar: var(--sidebar);
+    --color-chart-bar: var(--chart-bar);
     --color-chart-5: var(--chart-5);
     --color-chart-4: var(--chart-4);
     --color-chart-3: var(--chart-3);
@@ -72,6 +73,13 @@
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
+    /* The single-series bar colour, chosen per mode against the card it sits on
+       rather than reused from --chart-1: that step is oklch(0.87) in BOTH blocks
+       below, which is 1.3:1 on the white card and invisible. These two clear 3:1
+       on their own surface - verified with the data-viz palette validator
+       (#737373 on #ffffff, #d4d4d4 on #171717). One series needs no hue, so a
+       neutral is on-brand here rather than a compromise. */
+    --chart-bar: oklch(0.556 0 0);
     --radius: 0.625rem;
     --sidebar: oklch(0.985 0 0);
     --sidebar-foreground: oklch(0.145 0 0);
@@ -107,6 +115,7 @@
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
+    --chart-bar: oklch(0.87 0 0);
     --sidebar: oklch(0.205 0 0);
     --sidebar-foreground: oklch(0.985 0 0);
     --sidebar-primary: oklch(0.488 0.243 264.376);

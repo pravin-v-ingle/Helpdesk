@@ -488,12 +488,22 @@ export async function autoResolveTicket(ticketId: number): Promise<string | null
  */
 async function write(ticketId: number, reply: string): Promise<string | null> {
   return serializable(async (tx) => {
+    // Inside the callback, which `serializable` re-runs on a conflict: a retry
+    // should stamp the attempt that actually committed, not the one that lost.
+    const now = new Date();
+
     const { count } = await tx.ticket.updateMany({
       // RESOLVED, never CLOSED. Closing is a judgement only a person makes, and
       // a student's reply reopens a RESOLVED ticket by the ordinary inbound
       // rule - which is what makes this the safe end state for a machine.
       where: { id: ticketId, status: TicketStatus.OPEN, autoResolvedAt: null },
-      data: { status: TicketStatus.RESOLVED, autoResolvedAt: new Date() },
+      // `resolvedAt` and `autoResolvedAt` are the same instant here and are
+      // still two columns, because they answer different questions: one is when
+      // the ticket left the queue, which a human resolution sets too, and the
+      // other is that the reply was not a colleague's. They part company the
+      // moment a student replies - the reopen clears the first and keeps the
+      // second.
+      data: { status: TicketStatus.RESOLVED, autoResolvedAt: now, resolvedAt: now },
     });
 
     if (count === 0) {

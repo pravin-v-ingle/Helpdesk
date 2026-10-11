@@ -36,7 +36,24 @@ Technology decisions for the AI-powered ticket management system. See `project-s
   `index.html` from `prefers-color-scheme`. This replaced the Vite starter's
   custom-property stylesheet once the shell, login page and form controls were
   all restyling the same handful of tokens.
-- Key routes: `/login`, `/` (home), `/tickets` (list, filter, sort),
+- **No charting library.** The dashboard's one chart - tickets per day over the
+  last thirty - is plain HTML and CSS in
+  `client/src/components/TicketVolumeChart.tsx`: a flex row of bars with a
+  percentage height each. Recharts (through shadcn's own `chart` component) was
+  the obvious choice and is an order of magnitude larger than the feature it
+  would serve here. Three things settled it beyond size. The data-viz mark specs
+  the chart follows are exact - a 2px gap *in the surface colour* between bars, a
+  4px radius on the data end only and square at the baseline, solid hairline
+  gridlines - and stating them directly is less work than overriding a library's
+  defaults to match. A `viewBox`'d SVG scales its own axis text with the card,
+  which goes wrong at both ends of the responsive range, while CSS text does not.
+  And bars as DOM nodes with real `aria-label`s are assertable in jsdom, where
+  SVG path geometry is not - so the chart's behaviour is covered by the same kind
+  of component test as everything else. **Revisit at the third or fourth chart**:
+  axes, scales and tooltips are exactly the things that stop being worth
+  hand-writing once they are repeated, and this file is where that trade was
+  made.
+- Key routes: `/login`, `/` (dashboard), `/tickets` (list, filter, sort),
   `/tickets/:id` (detail), `/admin/users` (admin only).
 - **Axios** for HTTP, behind one `apiFetch()` helper in `client/src/lib/api.ts`
   that turns a non-2xx response into an `ApiError` and fires the 401 handler.

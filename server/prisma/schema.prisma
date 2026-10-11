@@ -189,6 +189,20 @@ model Ticket {
   /// record that a reply was not written by a person - deliberately, because the
   /// reply itself says nothing about it.
   autoResolvedAt DateTime?
+  /// When this ticket last left the OPEN queue, which is the only honest basis
+  /// for a resolution time: `updatedAt` moves on any category or assignee edit,
+  /// `lastMessageAt` moves on any reply, and `autoResolvedAt` covers only the
+  /// auto-resolver's own. Stamped when `status` becomes RESOLVED or CLOSED and
+  /// cleared when it goes back to OPEN - so a student's reply reopening a ticket
+  /// retires the old figure rather than leaving a resolution time on a ticket
+  /// that is open again. RESOLVED -> CLOSED does **not** re-stamp it: closing a
+  /// ticket resolved last week did not take a week to resolve.
+  ///
+  /// Null therefore means one of two things, and the dashboard says so rather
+  /// than averaging over the difference: the ticket is open, or it was resolved
+  /// before this column existed. The backfill recovered only the auto-resolver's
+  /// timestamps, because those are the only recorded ones.
+  resolvedAt     DateTime?
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
   messages       Message[]
