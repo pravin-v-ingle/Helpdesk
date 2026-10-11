@@ -38,14 +38,11 @@ const SEARCH_DEBOUNCE_MS = 300
 // with no direction of its own falls back to.
 const DEFAULT_SORT_DIR: SortDir = SortDir.desc
 /**
- * The status the list shows when the URL names none. Removal is soft here -
- * nothing ever leaves the table, because a ticket somebody handled still has
- * to name them - so without a default the deactivated and the deleted pile up
- * for ever in the admin's view of who works here. Unlike `role`, then, an
- * absent `status` is not "no filter": `?status=all` is, and it is the one
- * `?status=` value that is not a `UserStatus`.
+ * The one `?status=` value that is not a `UserStatus`: the page's own spelling
+ * for "no filter", kept to itself and never sent (the server refuses it). It is
+ * also the default - an absent `?status=` shows every account, deactivated and
+ * deleted included.
  */
-const DEFAULT_STATUS: UserStatus = 'active'
 const ALL_STATUSES = 'all'
 
 const NETWORK_ERROR = 'Could not reach the server. Please try again.'
@@ -94,14 +91,9 @@ function readFilters(params: URLSearchParams): Filters {
   }
 }
 
-/**
- * `all` means every row; anything unusable - including absent - falls back to
- * `DEFAULT_STATUS` rather than quietly widening the list to everything, which
- * is the one mistake this filter exists to prevent.
- */
+/** Absent, `all`, or anything unusable all mean every row. */
 function readStatus(value: string | null): UserStatus | undefined {
-  if (value === ALL_STATUSES) return undefined
-  return isUserStatus(value) ? value : DEFAULT_STATUS
+  return isUserStatus(value) ? value : undefined
 }
 
 /**
@@ -130,13 +122,9 @@ function totalPagesOf({ total, pageSize }: UserListResponse): number {
  * the create form (`CreateUserDialog`). The page owns the URL state and the
  * query; `UsersTable` renders the rows and owns their edit and delete dialogs.
  *
- * It shows the **active** accounts unless the URL says otherwise
- * (`DEFAULT_STATUS`): a deletion here is soft and a deactivation reversible, so
- * every removed account stays in the table for ever and an unfiltered list
- * would grow into a list of mostly former colleagues. The Status select carries
- * that default rather than hiding it, and `All statuses` is how a deleted row
- * is found again - which is the only way back, until task 2.13e adds a restore
- * control.
+ * It shows **every** account unless the URL says otherwise - active,
+ * deactivated and deleted alike, since removal here is soft and nothing ever
+ * leaves the table. The Status select narrows it.
  *
  * Sorting is server-side: every column header but Actions is a control, the
  * chosen column and direction live in the URL as `sortBy`/`sortDir`, and the
@@ -238,11 +226,8 @@ export function UsersPage() {
   const currentUserId = auth.status === 'authenticated' ? auth.user.id : undefined
   // Sorting is deliberately not part of this: a sort is not a filter, and
   // including one would show "No users match your filters." on an unfiltered,
-  // merely-sorted empty list. The defaulted status counts as one, though, so
-  // "No users yet." is reachable only under `?status=all` - the only view in
-  // which it is true. With Active applied, an empty list means the deactivated
-  // and deleted rows did not match, and the Status control says as much right
-  // above the message.
+  // merely-sorted empty list. With no status in the URL the list is unfiltered,
+  // so an empty one really is "No users yet."
   const filtered =
     filters.q !== undefined || filters.role !== undefined || filters.status !== undefined
 
@@ -302,7 +287,7 @@ export function UsersPage() {
             // chosen" are one URL and one history entry - the rule `page` already
             // follows. Every other choice, `all` included, is written out.
             onValueChange={(value) =>
-              updateFilters({ status: value === DEFAULT_STATUS ? undefined : value })
+              updateFilters({ status: value === ALL_STATUSES ? undefined : value })
             }
           >
             <SelectTrigger id="users-status" className="w-40">
